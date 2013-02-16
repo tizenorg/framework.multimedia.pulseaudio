@@ -1,0 +1,21 @@
+<manifest>
+	<define>
+		<domain name="pulseaudio"/>
+		<request>
+			<smack request="dbus" type="rw"/>
+			<smack request="system::vconf" type="arwxt"/>
+			<smack request="system::audio" type="arwxt"/>
+			<smack request="power_manager" type="w"/>
+			<smack request="system::recording" type="rw"/>
+		</request>
+		<permit>
+			<smack permit="dbus" type="rw"/>
+		</permit>
+	</define>
+	<assign>
+		<filesystem path="/usr/bin/pulseaudio" label="pulseaudio" exec_label="pulseaudio"/>
+	</assign>
+	<request>
+		<domain name="_"/>
+	</request>
+</manifest>
