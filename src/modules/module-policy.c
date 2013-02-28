@@ -893,6 +893,14 @@ void pa__done(pa_module *m)
         pa_hook_slot_free(u->sink_input_new_hook_slot);
     if (u->sink_put_hook_slot)
         pa_hook_slot_free(u->sink_put_hook_slot);
+    if (u->sink_unlink_slot)
+        pa_hook_slot_free(u->sink_unlink_slot);
+    if (u->sink_unlink_post_slot)
+        pa_hook_slot_free(u->sink_unlink_post_slot);
+    if (u->sink_input_move_start_slot)
+        pa_hook_slot_free(u->sink_input_move_start_slot);
+    if (u->sink_input_move_finish_slot)
+        pa_hook_slot_free(u->sink_input_move_finish_slot);
     if (u->subscription)
         pa_subscription_free(u->subscription);
     if (u->protocol) {
