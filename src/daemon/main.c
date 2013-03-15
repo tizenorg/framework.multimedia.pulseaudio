@@ -103,6 +103,8 @@
 #include "caps.h"
 #include "ltdl-bind-now.h"
 
+#define PA_READY "/tmp/.pa_ready"
+
 #ifdef HAVE_LIBWRAP
 /* Only one instance of these variables */
 int allow_severity = LOG_INFO;
@@ -966,6 +968,9 @@ int main(int argc, char *argv[]) {
 
 
     pa_log_info(_("Daemon startup complete."));
+
+    /* broadcast if we're ready */
+    creat(PA_READY, 0644);
 
     retval = 0;
     if (pa_mainloop_run(mainloop, &retval) < 0)

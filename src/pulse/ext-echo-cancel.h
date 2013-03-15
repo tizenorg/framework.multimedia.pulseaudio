@@ -1,5 +1,5 @@
-#ifndef foopulseextpolicyhfoo
-#define foopulseextpolicyhfoo
+#ifndef foopulseechocancelfoo
+#define foopulseechocancelfoo
 
 /***
   This file is part of PulseAudio.
@@ -25,36 +25,24 @@
 
 /** \file
  *
- * Routines for controlling module-policy
+ * Routines for controlling module-echo-cancel
  */
 
 PA_C_DECL_BEGIN
 
-/** Callback prototype for pa_ext_policy_test(). \since 0.9.21 */
-typedef void (*pa_ext_policy_test_cb_t)(
+/** Set volume to AEC module */
+pa_operation *pa_ext_echo_cancel_set_volume (
         pa_context *c,
-        uint32_t version,
-        void *userdata);
-
-/** Test if this extension module is available in the server. \since 0.9.21 */
-pa_operation *pa_ext_policy_test(
-        pa_context *c,
-        pa_ext_policy_test_cb_t cb,
-        void *userdata);
-
-/** Enable the mono mode. \since 0.9.21 */
-pa_operation *pa_ext_policy_set_mono (
-        pa_context *c,
-        int enable,
+        int volume,
         pa_context_success_cb_t cb,
         void *userdata);
 
-/** Enable the balance mode. \since 0.9.21 */
-pa_operation *pa_ext_policy_set_balance (
+pa_operation *pa_ext_echo_cancel_set_device (
         pa_context *c,
-        double *balance,
+        int device,
         pa_context_success_cb_t cb,
         void *userdata);
+
 
 PA_C_DECL_END
 

@@ -57,6 +57,9 @@
 #include <pulsecore/sample-util.h>
 #include <pulsecore/ltdl-helper.h>
 
+#include <pulsecore/protocol-native.h>
+#include <pulsecore/pstream-util.h>
+
 #include "module-echo-cancel-symdef.h"
 
 PA_MODULE_AUTHOR("Wim Taymans");
@@ -91,6 +94,11 @@ typedef enum {
     PA_ECHO_CANCELLER_SPEEX = 0,
     PA_ECHO_CANCELLER_ADRIAN,
 } pa_echo_canceller_method_t;
+
+enum {
+	AEC_SET_VOLUME,
+	AEC_SET_DEVICE,
+};
 
 #define DEFAULT_ECHO_CANCELLER "speex"
 
@@ -200,6 +208,7 @@ struct userdata {
     FILE *captured_file;
     FILE *played_file;
     FILE *canceled_file;
+    pa_native_protocol *protocol;
 };
 
 static void source_output_snapshot_within_thread(struct userdata *u, struct snapshot *snapshot);
@@ -1324,6 +1333,48 @@ static pa_echo_canceller_method_t get_ec_method_from_string(const char *method)
         return PA_ECHO_CANCELLER_INVALID;
 }
 
+static int extension_cb(pa_native_protocol *p, pa_module *m, pa_native_connection *c, uint32_t tag, pa_tagstruct *t) {
+	uint32_t command;
+	uint32_t value;
+	struct userdata *u = NULL;
+	pa_tagstruct *reply = NULL;
+	pa_assert(p);
+	pa_assert(m);
+	pa_assert(c);
+	pa_assert(t);
+
+	u = m->userdata;
+
+	if (pa_tagstruct_getu32(t, &command) < 0)
+	goto fail;
+
+	reply = pa_tagstruct_new(NULL, 0);
+	pa_tagstruct_putu32(reply, PA_COMMAND_REPLY);
+	pa_tagstruct_putu32(reply, tag);
+
+	switch (command) {
+		case AEC_SET_VOLUME: {
+			pa_tagstruct_getu32(t,&value);
+			pa_log_debug("AEC_SET_VOLUME in echo cancel = %d",value);
+		break;
+	}
+		case AEC_SET_DEVICE: {
+			pa_tagstruct_getu32(t,&value);
+			pa_log_debug("AEC_SET_DEVICE in echo cancel = %d",value);
+		break;
+	}
+	default:
+		goto fail;
+	}
+	pa_pstream_send_tagstruct(pa_native_connection_get_pstream(c), reply);
+	return 0;
+
+fail:
+	return -1;
+}
+
+
+
 int pa__init(pa_module*m) {
     struct userdata *u;
     pa_sample_spec source_ss, sink_ss;
@@ -1391,7 +1442,6 @@ int pa__init(pa_module*m) {
     u->ec->init = ec_table[ec_method].init;
     u->ec->run = ec_table[ec_method].run;
     u->ec->done = ec_table[ec_method].done;
-
     adjust_time_sec = DEFAULT_ADJUST_TIME_USEC / PA_USEC_PER_SEC;
     if (pa_modargs_get_value_u32(ma, "adjust_time", &adjust_time_sec) < 0) {
         pa_log("Failed to parse adjust_time value");
@@ -1654,6 +1704,8 @@ int pa__init(pa_module*m) {
         if (u->canceled_file == NULL)
             perror ("fopen failed");
     }
+    u->protocol = pa_native_protocol_get(m->core);
+    pa_native_protocol_install_ext(u->protocol, m, extension_cb);
 
     pa_sink_put(u->sink);
     pa_source_put(u->source);
@@ -1728,7 +1780,10 @@ void pa__done(pa_module*m) {
 
         pa_xfree(u->ec);
     }
-
+    if (u->protocol) {
+        pa_native_protocol_remove_ext(u->protocol, m);
+        pa_native_protocol_unref(u->protocol);
+    }
     if (u->asyncmsgq)
         pa_asyncmsgq_unref(u->asyncmsgq);
 

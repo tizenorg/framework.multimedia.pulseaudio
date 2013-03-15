@@ -61,7 +61,6 @@ struct pa_echo_canceller {
                                          const char *args);
     void        (*run)                  (pa_echo_canceller *ec, const uint8_t *rec, const uint8_t *play, uint8_t *out);
     void        (*done)                 (pa_echo_canceller *ec);
-
     pa_echo_canceller_params params;
 
     pa_bool_t tx_agc;

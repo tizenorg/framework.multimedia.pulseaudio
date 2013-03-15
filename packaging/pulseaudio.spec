@@ -4,7 +4,7 @@
 Name:       pulseaudio
 Summary:    Improved Linux sound server
 Version:    0.9.23
-Release:    14
+Release:    29
 Group:      Multimedia/PulseAudio
 License:    LGPLv2+
 URL:        http://pulseaudio.org
@@ -13,6 +13,7 @@ Source1:    pulseaudio.service
 Requires:   udev
 Requires:   power-manager
 Requires:   systemd
+Requires(post):   bluez
 Requires(preun):  /usr/bin/systemctl
 Requires(post):   /usr/bin/systemctl
 Requires(postun): /usr/bin/systemctl

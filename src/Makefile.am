@@ -722,6 +722,7 @@ pulseinclude_HEADERS = \
 		pulse/ext-device-manager.h \
 		pulse/ext-stream-restore.h \
 		pulse/ext-policy.h \
+		pulse/ext-echo-cancel.h \
 		pulse/gccmacro.h \
 		pulse/introspect.h \
 		pulse/mainloop-api.h \
@@ -774,6 +775,7 @@ libpulse_la_SOURCES = \
 		pulse/ext-device-manager.c pulse/ext-device-manager.h \
 		pulse/ext-stream-restore.c pulse/ext-stream-restore.h \
 		pulse/ext-policy.c pulse/ext-policy.h \
+		pulse/ext-echo-cancel.c pulse/ext-echo-cancel.h \
 		pulse/gccmacro.h \
 		pulse/internal.h \
 		pulse/introspect.c pulse/introspect.h \
@@ -1631,7 +1633,7 @@ module_echo_cancel_la_SOURCES = modules/echo-cancel/module-echo-cancel.c modules
 				modules/echo-cancel/adrian-aec.c modules/echo-cancel/adrian-aec.h \
 				modules/echo-cancel/adrian.c modules/echo-cancel/adrian.h
 module_echo_cancel_la_LDFLAGS = $(MODULE_LDFLAGS)
-module_echo_cancel_la_LIBADD = $(AM_LIBADD) libpulsecore-@PA_MAJORMINORMICRO@.la libpulsecommon-@PA_MAJORMINORMICRO@.la libpulse.la $(LIBSPEEX_LIBS)
+module_echo_cancel_la_LIBADD = $(AM_LIBADD) libprotocol-native.la libpulsecore-@PA_MAJORMINORMICRO@.la libpulsecommon-@PA_MAJORMINORMICRO@.la libpulse.la $(LIBSPEEX_LIBS)
 module_echo_cancel_la_CFLAGS = $(AM_CFLAGS) $(LIBSPEEX_CFLAGS) 
 
 # RTP modules

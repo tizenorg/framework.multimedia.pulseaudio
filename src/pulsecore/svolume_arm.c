@@ -79,13 +79,22 @@ pa_volume_s16ne_arm (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         " ldrd r2, [r6], #8               \n\t" /* 2 samples at a time */
         " ldr  r0, [%0]                   \n\t"
 
+#ifdef WORDS_BIGENDIAN
         " smulwt r2, r2, r0               \n\t"
         " smulwb r3, r3, r0               \n\t"
+#else
+        " smulwb r2, r2, r0               \n\t"
+        " smulwt r3, r3, r0               \n\t"
+#endif
 
         " ssat r2, #16, r2                \n\t"
         " ssat r3, #16, r3                \n\t"
 
+#ifdef WORDS_BIGENDIAN
         " pkhbt r0, r3, r2, LSL #16       \n\t"
+#else
+        " pkhbt r0, r2, r3, LSL #16       \n\t"
+#endif
         " str  r0, [%0], #4               \n\t"
 
         MOD_INC()
@@ -99,18 +108,30 @@ pa_volume_s16ne_arm (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         " ldrd r4, [r6], #8               \n\t"
         " ldrd r0, [%0]                   \n\t"
 
+#ifdef WORDS_BIGENDIAN
         " smulwt r2, r2, r0               \n\t"
         " smulwb r3, r3, r0               \n\t"
         " smulwt r4, r4, r1               \n\t"
         " smulwb r5, r5, r1               \n\t"
+#else
+        " smulwb r2, r2, r0               \n\t"
+        " smulwt r3, r3, r0               \n\t"
+        " smulwb r4, r4, r1               \n\t"
+        " smulwt r5, r5, r1               \n\t"
+#endif
 
         " ssat r2, #16, r2                \n\t"
         " ssat r3, #16, r3                \n\t"
         " ssat r4, #16, r4                \n\t"
         " ssat r5, #16, r5                \n\t"
 
+#ifdef WORDS_BIGENDIAN
         " pkhbt r0, r3, r2, LSL #16       \n\t"
         " pkhbt r1, r5, r4, LSL #16       \n\t"
+#else
+        " pkhbt r0, r2, r3, LSL #16       \n\t"
+        " pkhbt r1, r4, r5, LSL #16       \n\t"
+#endif
         " strd  r0, [%0], #8              \n\t"
 
         MOD_INC()

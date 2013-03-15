@@ -51,18 +51,23 @@ struct userdata {
     int	bt_off_idx;
 
     int is_mono;
+    float balance;
     pa_module* module_mono_bt;
     pa_module* module_combined;
     pa_module* module_mono_combined;
     pa_native_protocol *protocol;
+    pa_hook_slot *source_output_new_hook_slot;
 };
 
 enum {
     SUBCOMMAND_TEST,
     SUBCOMMAND_MONO,
+    SUBCOMMAND_BALANCE,
 };
 
 /* DEFINEs */
+#define AEC_SINK			"alsa_output.0.analog-stereo.echo-cancel"
+#define AEC_SOURCE			"alsa_input.0.analog-stereo.echo-cancel"
 #define	SINK_ALSA			"alsa_output.0.analog-stereo"
 #define SINK_MONO_ALSA		"mono_alsa"
 #define SINK_MONO_BT		"mono_bt"
@@ -71,9 +76,10 @@ enum {
 #define POLICY_AUTO			"auto"
 #define POLICY_PHONE		"phone"
 #define POLICY_ALL			"all"
+#define POLICY_VOIP			"voip"
 #define BLUEZ_API			"bluez"
 #define ALSA_API			"alsa"
-#define MONO_KEY 			"db/setting/accessibility/mono_audio"
+#define MONO_KEY 			VCONFKEY_SETAPPL_ACCESSIBILITY_MONO_AUDIO
 
 /* check if this sink is bluez */
 static pa_bool_t policy_is_bluez (pa_sink* sink)
@@ -219,6 +225,9 @@ static pa_sink* policy_select_proper_sink (pa_core *c, const char* policy, int i
 	} else if (pa_streq(policy, POLICY_PHONE)) {
 		/* phone */
 		sink = policy_get_sink_by_name (c, (is_mono)? SINK_MONO_ALSA : SINK_ALSA);
+	} else if (pa_streq(policy, POLICY_VOIP)) {
+		/* VOIP */
+		sink = policy_get_sink_by_name (c,AEC_SINK);
 	} else {
 		/* auto */
 		if (policy_is_bluez(def)) {
@@ -268,6 +277,7 @@ static int extension_cb(pa_native_protocol *p, pa_module *m, pa_native_connectio
   pa_tagstruct *reply = NULL;
 
   pa_sink_input *si = NULL;
+  pa_sink *s = NULL;
   uint32_t idx;
   pa_sink* sink_to_move  = NULL;
 
@@ -346,6 +356,35 @@ static int extension_cb(pa_native_protocol *p, pa_module *m, pa_native_connectio
 		}
         break;
     }
+
+    case SUBCOMMAND_BALANCE: {
+		float balance;
+		pa_cvolume cvol;
+		pa_channel_map map;
+
+		if (pa_tagstruct_get_cvolume(t, &cvol) < 0)
+			goto fail;
+
+		pa_channel_map_init_stereo(&map);
+		balance = pa_cvolume_get_balance(&cvol, &map);
+
+		pa_log_debug ("[POLICY][%s] new balance value = [%f]\n", __func__, balance);
+
+		if (balance == u->balance) {
+			pa_log_debug ("[POLICY][%s] No changes in balance value = [%f]", __func__, u->balance);
+			break;
+		}
+
+		u->balance = balance;
+
+		/* Apply balance value to each Sinks */
+		PA_IDXSET_FOREACH(s, u->core->sinks, idx) {
+			pa_cvolume* cvol = pa_sink_get_volume (s, false);
+			pa_cvolume_set_balance (cvol, &s->channel_map, u->balance);
+			pa_sink_set_volume(s, cvol, TRUE, TRUE);
+		}
+		break;
+	}
 
     default:
       goto fail;
@@ -485,7 +524,12 @@ static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, struct
 		} else {
 			pa_log_debug("[POLICY][%s] Can't move sink-input....",__func__);
 		}
-    }
+	}
+
+	/* Reset sink volume with balance from userdata */
+	pa_cvolume* cvol = pa_sink_get_volume(sink, FALSE);
+	pa_cvolume_set_balance(cvol, &sink->channel_map, u->balance);
+	pa_sink_set_volume(sink, cvol, TRUE, TRUE);
 
     return PA_HOOK_OK;
 }
@@ -675,6 +719,91 @@ static pa_hook_result_t sink_input_move_finish_cb(pa_core *core, pa_sink_input *
     return PA_HOOK_OK;
 }
 
+static pa_source* policy_get_source_by_name (pa_core *c, const char* source_name)
+{
+	pa_source *s = NULL;
+	uint32_t idx;
+
+	if (c == NULL || source_name == NULL) {
+		pa_log_warn ("input param is null");
+		return NULL;
+	}
+
+	PA_IDXSET_FOREACH(s, c->sources, idx) {
+		if (pa_streq (s->name, source_name)) {
+			pa_log_debug ("[POLICY][%s] return [%p] for [%s]\n",  __func__, s, source_name);
+			return s;
+		}
+	}
+	return NULL;
+}
+
+/* Select source for given condition */
+static pa_source* policy_select_proper_source (pa_core *c, const char* policy)
+{
+	pa_source* source = NULL;
+	pa_source* def = NULL;
+
+	if (c == NULL || policy == NULL) {
+		pa_log_warn ("input param is null");
+		return NULL;
+	}
+
+	pa_assert (c);
+	def = pa_namereg_get_default_source(c);
+	if (def == NULL) {
+		pa_log_warn ("POLICY][%s] pa_namereg_get_default_source() returns null", __func__);
+		return NULL;
+	}
+
+	/* Select source  to */
+	if (pa_streq(policy, POLICY_VOIP)) {
+		source = policy_get_source_by_name (c, AEC_SOURCE);
+
+	} else {
+		source = def;
+	}
+
+	pa_log_debug ("[POLICY][%s] selected source : [%s]\n", __func__, (source)? source->name : "null");
+	return source;
+}
+
+
+/*  Called when new source-output is creating  */
+static pa_hook_result_t source_output_new_hook_callback(pa_core *c, pa_source_output_new_data *new_data, struct userdata *u) {
+	const char *policy = NULL;
+	pa_assert(c);
+	pa_assert(new_data);
+	pa_assert(u);
+
+	if (!new_data->proplist) {
+		pa_log_debug("New stream lacks property data.");
+		return PA_HOOK_OK;
+	}
+
+	if (new_data->source) {
+		pa_log_debug("Not setting device for stream %s, because already set.", pa_strnull(pa_proplist_gets(new_data->proplist, PA_PROP_MEDIA_NAME)));
+		return PA_HOOK_OK;
+	}
+
+	/* If no policy exists, skip */
+	if (!(policy = pa_proplist_gets(new_data->proplist, PA_PROP_MEDIA_POLICY))) {
+		pa_log_debug("[POLICY][%s] Not setting device for stream [%s], because it lacks policy.",
+				__func__, pa_strnull(pa_proplist_gets(new_data->proplist, PA_PROP_MEDIA_NAME)));
+		return PA_HOOK_OK;
+	}
+	pa_log_debug("[POLICY][%s] Policy for stream [%s] = [%s]",
+			__func__, pa_strnull(pa_proplist_gets(new_data->proplist, PA_PROP_MEDIA_NAME)), policy);
+
+	/* Set proper source to source-output */
+	new_data->save_source= FALSE;
+	new_data->source= policy_select_proper_source (c, policy);
+	pa_log_debug("[POLICY][%s] set source of source-input to [%s]", __func__, (new_data->source)? new_data->source->name : "null");
+
+	return PA_HOOK_OK;
+}
+
+
 int pa__init(pa_module *m)
 {
 	pa_modargs *ma = NULL;
@@ -703,6 +832,9 @@ int pa__init(pa_module *m)
 	/* A little bit later than module-stream-restore */
 	u->sink_input_new_hook_slot =
 			pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SINK_INPUT_NEW], PA_HOOK_EARLY+10, (pa_hook_cb_t) sink_input_new_hook_callback, u);
+
+	u->source_output_new_hook_slot =
+			pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SOURCE_OUTPUT_NEW], PA_HOOK_EARLY+10, (pa_hook_cb_t) source_output_new_hook_callback, u);
 
 	if (on_hotplug) {
 		/* A little bit later than module-stream-restore */
@@ -767,7 +899,8 @@ void pa__done(pa_module *m)
         pa_native_protocol_remove_ext(u->protocol, m);
         pa_native_protocol_unref(u->protocol);
     }
-
+    if (u->source_output_new_hook_slot)
+        pa_hook_slot_free(u->source_output_new_hook_slot);
     pa_xfree(u);
 
 
