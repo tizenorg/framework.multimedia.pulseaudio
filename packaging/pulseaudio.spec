@@ -4,7 +4,7 @@
 Name:       pulseaudio
 Summary:    Improved Linux sound server
 Version:    0.9.23
-Release:    29
+Release:    31
 Group:      Multimedia/PulseAudio
 License:    LGPLv2+
 URL:        http://pulseaudio.org
@@ -19,8 +19,6 @@ Requires(post):   /usr/bin/systemctl
 Requires(postun): /usr/bin/systemctl
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig
-BuildRequires:  pkgconfig(capi-system-power)
-BuildRequires:  pkgconfig(sysman)
 BuildRequires:  pkgconfig(speexdsp)
 BuildRequires:  pkgconfig(sndfile)
 BuildRequires:  pkgconfig(alsa)
