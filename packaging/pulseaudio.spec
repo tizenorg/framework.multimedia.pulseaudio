@@ -88,6 +88,14 @@ Requires:   /bin/sed
 This module enables PulseAudio to work with bluetooth devices, like headset
  or audio gatewa
 
+%package module-devel
+Summary:    Headers for PulseAudio module development
+Group:      Development/Libraries
+Requires:   %{name}-libs-devel = %{version}-%{release}
+
+%description module-devel
+Headers for developing pulseaudio modules
+
 %prep
 %setup -q
 
@@ -116,6 +124,10 @@ install -d %{buildroot}%{_sysconfdir}/rc.d/rc3.d
 install -d %{buildroot}%{_sysconfdir}/rc.d/rc4.d
 ln -s ../init.d/pulseaudio.sh %{buildroot}%{_sysconfdir}/rc.d/rc3.d/S20pulseaudio
 ln -s ../init.d/pulseaudio.sh %{buildroot}%{_sysconfdir}/rc.d/rc4.d/S20pulseaudio
+
+# Export pulsecore headers for PA modules development
+install -d %{buildroot}/usr/include/pulsecore
+install -m 644 src/pulsecore/*.h %{buildroot}/usr/include/pulsecore/
 
 pushd %{buildroot}/etc/pulse/filter
 ln -sf filter_8000_44100.dat filter_11025_44100.dat
@@ -274,6 +286,10 @@ systemctl daemon-reload
 %{_libdir}/pkgconfig/libpulse.pc
 %exclude %{_libdir}/pkgconfig/libpulse-mainloop-glib.pc
 %exclude %{_libdir}/libpulse-mainloop-glib.so
+
+%files module-devel
+%defattr(-,root,root)
+%{_includedir}/pulsecore/*
 
 %files utils
 %defattr(-,root,root,-)
