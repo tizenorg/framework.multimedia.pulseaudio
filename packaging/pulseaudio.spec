@@ -4,7 +4,7 @@
 Name:       pulseaudio
 Summary:    Improved Linux sound server
 Version:    0.9.23
-Release:    31
+Release:    32
 Group:      Multimedia/PulseAudio
 License:    LGPLv2+
 URL:        http://pulseaudio.org
