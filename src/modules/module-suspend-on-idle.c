@@ -72,10 +72,6 @@
 #define PM_RESET_TIMER  0x1     /**< reset timer for unlock */
 #define PM_KEEP_TIMER   0x2     /**< keep timer for unlock */
 
-/* parameter for pm_set_lcd_timeout */
-#define CUSTOM_TIMEOUT  0x1
-
-
 struct pwr_msg {
 	pid_t pid;
 	unsigned int cond;
@@ -173,27 +169,6 @@ static int send_msg(unsigned int s_bits, unsigned int timeout, unsigned int time
 	return rc;
 }
 
-static int pm_change_state(unsigned int s_bits)
-{
-	/* s_bits is LCD_NORMAL 0x1, LCD_DIM 0x2, LCD_OFF 0x4, SUSPEND 0x8
-	 * Stage change to NORMAL       0x100
-	 * Stage change to LCDDIM       0x200
-	 * Stage change to LCDOFF       0x400
-	 * Stage change to SLEEP        0x800
-	 * */
-	switch (s_bits) {
-	case LCD_NORMAL:
-	case LCD_DIM:
-	case LCD_OFF:
-	case SUSPEND:
-	case POWER_OFF:
-		break;
-	default:
-		return -1;
-	}
-	return send_msg(s_bits << SHIFT_CHANGE_STATE, 0, 0);
-}
-
 static int pm_lock_state(unsigned int s_bits, unsigned int flag,
 		      unsigned int timeout)
 {
@@ -229,18 +204,6 @@ static int pm_unlock_state(unsigned int s_bits, unsigned int flag)
 	s_bits = (s_bits | (flag << SHIFT_UNLOCK_PARAMETER));
 	return send_msg(s_bits, 0, 0);
 }
-
-static void pm_set_lcd_timeout(unsigned int normal, unsigned int dim, unsigned int lock)
-{
-	unsigned int s_bits = CUSTOM_TIMEOUT;
-
-	if (lock == HOLD_KEY_BLOCK)
-		s_bits += HOLD_KEY_BLOCK;
-
-	s_bits = (s_bits << SHIFT_CHANGE_TIMEOUT);
-	return send_msg(s_bits, normal, dim);
-}
-
 
 #endif
 
