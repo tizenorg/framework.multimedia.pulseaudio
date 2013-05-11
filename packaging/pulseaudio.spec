@@ -33,6 +33,7 @@ BuildRequires:  libtool-ltdl-devel
 BuildRequires:  libtool
 BuildRequires:  intltool
 BuildRequires:  fdupes
+Requires(post): system-server
 
 
 %description
