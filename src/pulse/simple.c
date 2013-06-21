@@ -335,7 +335,9 @@ pa_simple* pa_simple_new_proplist(
         r = pa_stream_connect_playback(p->stream, dev, attr,
                                        PA_STREAM_INTERPOLATE_TIMING
                                        |PA_STREAM_ADJUST_LATENCY
-                                       |PA_STREAM_AUTO_TIMING_UPDATE, NULL, NULL);
+                                       |PA_STREAM_AUTO_TIMING_UPDATE
+                                       |PA_STREAM_START_MUTED
+                                       , NULL, NULL);
     else
         r = pa_stream_connect_record(p->stream, dev, attr,
                                      PA_STREAM_INTERPOLATE_TIMING

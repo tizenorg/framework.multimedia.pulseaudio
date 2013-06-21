@@ -920,3 +920,43 @@ pa_cvolume* pa_cvolume_dec(pa_cvolume *v, pa_volume_t dec) {
 
     return pa_cvolume_scale(v, m);
 }
+
+#ifdef PA_EXT_USE_VOLUME_FADING
+void pa_cvolume_fading_set(pa_cvolume *v, pa_cvolume_fading_info *f) {
+    pa_assert(v);
+    pa_assert(f);
+
+    strncpy(v->fading_token, PA_VOLUME_FADING_TOKEN_STR, PA_VOLUME_FADING_TOKEN_LEN);
+    v->fading_info = f;
+}
+
+void pa_cvolume_fading_unset(pa_cvolume *v) {
+    pa_assert(v);
+
+    memset(v->fading_token, 0x00, PA_VOLUME_FADING_TOKEN_LEN);
+    v->fading_info = NULL;
+}
+
+int pa_cvolume_fading_valid(const pa_cvolume *v) {
+    pa_assert(v);
+
+    if (strncmp(v->fading_token, PA_VOLUME_FADING_TOKEN_STR, PA_VOLUME_FADING_TOKEN_LEN) != 0)
+        return 0;
+
+    if (!v->fading_info)
+        return 0;
+
+    return 1;
+}
+
+void pa_cvolume_fading_update(pa_cvolume *dest, pa_cvolume *a)
+{
+    pa_assert(dest);
+    pa_assert(a);
+
+    if (pa_cvolume_fading_valid(a))
+        pa_cvolume_fading_set(dest, a->fading_info);
+    else
+        pa_cvolume_fading_unset(dest);
+}
+#endif

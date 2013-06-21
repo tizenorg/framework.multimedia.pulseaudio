@@ -718,11 +718,19 @@ void pa_volume_memchunk(
     void *ptr;
     volume_val linear[PA_CHANNELS_MAX + VOLUME_PADDING];
     pa_do_volume_func_t do_volume;
+#ifdef PA_EXT_USE_VOLUME_FADING
+    pa_bool_t is_fading = FALSE;
+    pa_cvolume_fading_info *f = volume->fading_info;
+#endif
 
     pa_assert(c);
     pa_assert(spec);
     pa_assert(c->length % pa_frame_size(spec) == 0);
     pa_assert(volume);
+
+#ifdef PA_EXT_USE_VOLUME_FADING
+    is_fading = pa_cvolume_fading_valid(volume) && (volume->fading_info->remain_frames > 0);
+#endif
 
     if (pa_memblock_is_silence(c->memblock))
         return;
@@ -730,7 +738,11 @@ void pa_volume_memchunk(
     if (pa_cvolume_channels_equal_to(volume, PA_VOLUME_NORM))
         return;
 
-    if (pa_cvolume_channels_equal_to(volume, PA_VOLUME_MUTED)) {
+    if (pa_cvolume_channels_equal_to(volume, PA_VOLUME_MUTED)
+#ifdef PA_EXT_USE_VOLUME_FADING
+        && (!is_fading)
+#endif
+    ) {
         pa_silence_memchunk(c, spec);
         return;
     }
@@ -743,11 +755,129 @@ void pa_volume_memchunk(
     do_volume = pa_get_volume_func (spec->format);
     pa_assert(do_volume);
 
+#ifdef PA_EXT_USE_VOLUME_FADING
+    ptr = (uint8_t*) pa_memblock_acquire(c->memblock) + c->index;
+
+    if (is_fading) {
+        size_t length = c->length;
+        unsigned channel;
+        pa_cvolume cur_volume;
+        pa_volume_t fading_step[PA_CHANNELS_MAX];
+        size_t operation_count, operation_size = PA_VOLUME_FADING_OPERATION_FRAMES * pa_frame_size(spec);
+        size_t remain_size, fading_pre_size, fading_size, fading_post_size;
+        pa_bool_t increase;
+#ifdef PA_EXT_CHECK_VOLUME_FADING_TIME
+        struct timeval start, finish;
+
+        pa_gettimeofday(&start);
+#endif
+
+        remain_size = f->remain_frames * pa_frame_size(spec);
+        cur_volume.channels = volume->channels;
+        for (channel = 0; channel < volume->channels; channel++)
+            cur_volume.values[channel] = f->cur_values[channel];
+        increase = (f->dst_values[0] > f->cur_values[0]) ? 1 : 0;
+
+        pa_log_debug("fading length:%ld remain:%ld cur:%d dst:%d", c->length, f->remain_frames, f->cur_values[0], f->dst_values[0]);
+
+        /* pre fading */
+        fading_pre_size = PA_MIN(length, remain_size % operation_size);
+        if (fading_pre_size > 0) {
+            calc_volume_table[spec->format] ((void *)linear, &cur_volume);
+            do_volume (ptr, (void *)linear, spec->channels, fading_pre_size);
+
+            ptr = (uint8_t*) ptr + fading_pre_size;
+            length -= fading_pre_size;
+            remain_size -= fading_pre_size;
+        }
+
+        if (remain_size > 0 && length > 0) {
+            void *ptr_end;
+
+            fading_size = PA_MIN(length, remain_size);
+            operation_count = fading_size / operation_size;
+            fading_post_size = fading_size % operation_size;
+            ptr_end = (uint8_t*) ptr + operation_count * operation_size;
+
+            if (increase) {
+                /* increase fading loop */
+                for (channel = 0; channel < volume->channels; channel++)
+                    fading_step[channel] = (f->dst_values[channel] - cur_volume.values[channel]) / (remain_size / operation_size);
+
+                for (; ptr < ptr_end; ptr = (uint8_t*) ptr + operation_size) {
+                    for (channel = 0; channel < volume->channels; channel++)
+                        cur_volume.values[channel] += fading_step[channel];
+                    calc_volume_table[spec->format] ((void *)linear, &cur_volume);
+                    do_volume (ptr, (void *)linear, spec->channels, operation_size);
+                }
+            } else {
+                /* decrease fading loop */
+                for (channel = 0; channel < volume->channels; channel++)
+                    fading_step[channel] = (cur_volume.values[channel] - f->dst_values[channel]) / (remain_size / operation_size);
+
+                for (; ptr < ptr_end; ptr = (uint8_t*) ptr + operation_size) {
+                    for (channel = 0; channel < volume->channels; channel++)
+                        cur_volume.values[channel] -= fading_step[channel];
+                    calc_volume_table[spec->format] ((void *)linear, &cur_volume);
+                    do_volume (ptr, (void *)linear, spec->channels, operation_size);
+                }
+            }
+            length -= operation_count * operation_size;
+            remain_size -= operation_count * operation_size;
+
+            /* post fading */
+            if (fading_post_size > 0) {
+                if (increase) {
+                    for (channel = 0; channel < volume->channels; channel++)
+                        cur_volume.values[channel] += fading_step[channel];
+                } else {
+                    for (channel = 0; channel < volume->channels; channel++)
+                        cur_volume.values[channel] -= fading_step[channel];
+                }
+                calc_volume_table[spec->format] ((void *)linear, &cur_volume);
+                do_volume (ptr, (void *)linear, spec->channels, fading_post_size);
+
+                length -= fading_post_size;
+                remain_size -= fading_post_size;
+            }
+
+        }
+
+        if (remain_size > 0) {
+            for (channel = 0; channel < volume->channels; channel++)
+                f->cur_values[channel] = cur_volume.values[channel];
+            f->remain_frames = remain_size / pa_frame_size(spec);
+        } else {
+            for (channel = 0; channel < volume->channels; channel++)
+                cur_volume.values[channel] = f->dst_values[channel];
+            f->remain_frames = 0;
+        }
+
+        /* fading is finished */
+        if (length > 0) {
+            if (pa_cvolume_channels_equal_to(&cur_volume, PA_VOLUME_MUTED)) {
+                pa_silence_memory(ptr, length, spec);
+            } else {
+                calc_volume_table[spec->format] ((void *)linear, &cur_volume);
+                do_volume (ptr, (void *)linear, spec->channels, length);
+            }
+        }
+#ifdef PA_EXT_CHECK_VOLUME_FADING_TIME
+        pa_gettimeofday(&finish);
+
+        pa_log_info("fading %ld bytes in %ld usec", (c->length - length), pa_timeval_diff(&finish, &start));
+#endif
+    } else {
+        calc_volume_table[spec->format] ((void *)linear, volume);
+        do_volume (ptr, (void *)linear, spec->channels, c->length);
+    }
+#else
     calc_volume_table[spec->format] ((void *)linear, volume);
 
     ptr = (uint8_t*) pa_memblock_acquire(c->memblock) + c->index;
 
     do_volume (ptr, (void *)linear, spec->channels, c->length);
+#endif
 
     pa_memblock_release(c->memblock);
 }

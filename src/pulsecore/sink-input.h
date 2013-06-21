@@ -104,6 +104,10 @@ struct pa_sink_input {
 
     pa_bool_t muted:1;
 
+#ifdef PA_EXT_USE_VOLUME_FADING
+    pa_queue *fading_queue;
+#endif
+
     /* if TRUE then the source we are connected to and/or the volume
      * set is worth remembering, i.e. was explicitly chosen by the
      * user and not automatically. module-stream-restore looks for
@@ -336,7 +340,7 @@ void pa_sink_input_kill(pa_sink_input*i);
 
 pa_usec_t pa_sink_input_get_latency(pa_sink_input *i, pa_usec_t *sink_latency);
 
-void pa_sink_input_set_volume(pa_sink_input *i, const pa_cvolume *volume, pa_bool_t save, pa_bool_t absolute);
+void pa_sink_input_set_volume(pa_sink_input *i, pa_cvolume *volume, pa_bool_t save, pa_bool_t absolute);
 pa_cvolume *pa_sink_input_get_volume(pa_sink_input *i, pa_cvolume *volume, pa_bool_t absolute);
 
 void pa_sink_input_set_mute(pa_sink_input *i, pa_bool_t mute, pa_bool_t save);

@@ -125,10 +125,25 @@ typedef uint32_t pa_volume_t;
 /** Special 'invalid' volume. \since 0.9.16 */
 #define PA_VOLUME_INVALID ((pa_volume_t) UINT32_MAX)
 
+#ifdef PA_EXT_USE_VOLUME_FADING
+#define PA_VOLUME_FADING_TOKEN_STR "fadi"
+#define PA_VOLUME_FADING_TOKEN_LEN 4
+#define PA_VOLUME_FADING_OPERATION_FRAMES 5
+typedef struct pa_cvolume_fading_info {
+    size_t remain_frames;
+    pa_volume_t cur_values[PA_CHANNELS_MAX];
+    pa_volume_t dst_values[PA_CHANNELS_MAX];
+} pa_cvolume_fading_info;
+#endif
+
 /** A structure encapsulating a per-channel volume */
 typedef struct pa_cvolume {
     uint8_t channels;                     /**< Number of channels */
     pa_volume_t values[PA_CHANNELS_MAX];  /**< Per-channel volume  */
+#ifdef PA_EXT_USE_VOLUME_FADING
+    char fading_token[PA_VOLUME_FADING_TOKEN_LEN];
+    pa_cvolume_fading_info *fading_info;
+#endif
 } pa_cvolume;
 
 /** Return non-zero when *a == *b */
@@ -366,6 +381,13 @@ pa_cvolume* pa_cvolume_inc(pa_cvolume *v, pa_volume_t inc);
 /** Increase the volume passed in by 'inc'. The proportions between
  * the channels are kept. \since 0.9.16 */
 pa_cvolume* pa_cvolume_dec(pa_cvolume *v, pa_volume_t dec);
+
+#ifdef PA_EXT_USE_VOLUME_FADING
+void pa_cvolume_fading_set(pa_cvolume *v, pa_cvolume_fading_info *f);
+void pa_cvolume_fading_unset(pa_cvolume *v);
+int pa_cvolume_fading_valid(const pa_cvolume *v);
+void pa_cvolume_fading_update(pa_cvolume *dest, pa_cvolume *a);
+#endif
 
 PA_C_DECL_END
 

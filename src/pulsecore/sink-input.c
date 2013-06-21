@@ -41,6 +41,8 @@
 
 #include "sink-input.h"
 
+#define PA_EXT_FADE_INTERVAL_MSEC 20
+
 #define MEMBLOCKQ_MAXLENGTH (32*1024*1024)
 #define CONVERT_BUFFER_LENGTH (PA_PAGE_SIZE)
 
@@ -308,6 +310,10 @@ int pa_sink_input_new(
 
     i->muted = data->muted;
 
+#ifdef PA_EXT_USE_VOLUME_FADING
+    i->fading_queue = pa_queue_new();
+#endif
+
     if (data->sync_base) {
         i->sync_next = data->sync_base->sync_next;
         i->sync_prev = data->sync_base;
@@ -516,6 +522,14 @@ static void sink_input_free(pa_object *o) {
     if (i->thread_info.resampler)
         pa_resampler_free(i->thread_info.resampler);
 
+#ifdef PA_EXT_USE_VOLUME_FADING
+    if (pa_cvolume_fading_valid(&i->thread_info.soft_volume)) {
+        pa_xfree(i->thread_info.soft_volume.fading_info);
+        pa_cvolume_fading_unset(&i->thread_info.soft_volume);
+    }
+    pa_queue_free(i->fading_queue, pa_xfree, NULL);
+#endif
+
     if (i->proplist)
         pa_proplist_free(i->proplist);
 
@@ -687,7 +701,12 @@ void pa_sink_input_peek(pa_sink_input *i, size_t slength /* in sink frames */, p
             if (do_volume_adj_here && !volume_is_norm) {
                 pa_memchunk_make_writable(&wchunk, 0);
 
-                if (i->thread_info.muted) {
+                if (i->thread_info.muted
+#ifdef PA_EXT_USE_VOLUME_FADING
+                    && !(pa_cvolume_fading_valid(&i->thread_info.soft_volume)
+                        && (i->thread_info.soft_volume.fading_info->remain_frames > 0))
+#endif
+                ) {
                     pa_silence_memchunk(&wchunk, &i->thread_info.sample_spec);
                     nvfs = FALSE;
 
@@ -698,6 +717,9 @@ void pa_sink_input_peek(pa_sink_input *i, size_t slength /* in sink frames */, p
                      * post and the pre volume adjustment into one */
 
                     pa_sw_cvolume_multiply(&v, &i->thread_info.soft_volume, &i->volume_factor_sink);
+#ifdef PA_EXT_USE_VOLUME_FADING
+                    pa_cvolume_fading_update(&v, &i->thread_info.soft_volume);
+#endif
                     pa_volume_memchunk(&wchunk, &i->thread_info.sample_spec, &v);
                     nvfs = FALSE;
 
@@ -709,6 +731,9 @@ void pa_sink_input_peek(pa_sink_input *i, size_t slength /* in sink frames */, p
 
                 if (nvfs) {
                     pa_memchunk_make_writable(&wchunk, 0);
+#ifdef PA_EXT_USE_VOLUME_FADING
+                    pa_cvolume_fading_update(&i->volume_factor_sink, &i->thread_info.soft_volume);
+#endif
                     pa_volume_memchunk(&wchunk, &i->sink->sample_spec, &i->volume_factor_sink);
                 }
 
@@ -723,6 +748,9 @@ void pa_sink_input_peek(pa_sink_input *i, size_t slength /* in sink frames */, p
 
                     if (nvfs) {
                         pa_memchunk_make_writable(&rchunk, 0);
+#ifdef PA_EXT_USE_VOLUME_FADING
+                        pa_cvolume_fading_update(&i->volume_factor_sink, &i->thread_info.soft_volume);
+#endif
                         pa_volume_memchunk(&rchunk, &i->sink->sample_spec, &i->volume_factor_sink);
                     }
 
@@ -753,14 +781,18 @@ void pa_sink_input_peek(pa_sink_input *i, size_t slength /* in sink frames */, p
     /* Let's see if we had to apply the volume adjustment ourselves,
      * or if this can be done by the sink for us */
 
-    if (do_volume_adj_here)
+    if (do_volume_adj_here) {
         /* We had different channel maps, so we already did the adjustment */
         pa_cvolume_reset(volume, i->sink->sample_spec.channels);
-    else if (i->thread_info.muted)
+    } else if (i->thread_info.muted) {
         /* We've both the same channel map, so let's have the sink do the adjustment for us*/
         pa_cvolume_mute(volume, i->sink->sample_spec.channels);
-    else
+    } else {
         *volume = i->thread_info.soft_volume;
+    }
+#ifdef PA_EXT_USE_VOLUME_FADING
+    pa_cvolume_fading_update(volume, &i->thread_info.soft_volume);
+#endif
 }
 
 /* Called from thread context */
@@ -978,8 +1010,12 @@ static void set_real_ratio(pa_sink_input *i, const pa_cvolume *v) {
 }
 
 /* Called from main context */
-void pa_sink_input_set_volume(pa_sink_input *i, const pa_cvolume *volume, pa_bool_t save, pa_bool_t absolute) {
+void pa_sink_input_set_volume(pa_sink_input *i, pa_cvolume *volume, pa_bool_t save, pa_bool_t absolute) {
     pa_cvolume v;
+#ifdef PA_EXT_USE_VOLUME_FADING
+    pa_cvolume_fading_info *f;
+    unsigned channel;
+#endif
 
     pa_sink_input_assert_ref(i);
     pa_assert_ctl_context();
@@ -1021,7 +1057,18 @@ void pa_sink_input_set_volume(pa_sink_input *i, const pa_cvolume *volume, pa_boo
     else {
         /* OK, we are in normal volume mode. The volume only affects
          * ourselves */
+#ifdef PA_EXT_USE_VOLUME_FADING
+        f = pa_xnew(pa_cvolume_fading_info, 1);
+        f->remain_frames = i->sample_spec.rate * PA_EXT_FADE_INTERVAL_MSEC / 1000;
+        for (channel = 0; channel < volume->channels; channel++)
+            f->cur_values[channel] = i->soft_volume.values[channel];
+#endif
         set_real_ratio(i, volume);
+#ifdef PA_EXT_USE_VOLUME_FADING
+        for (channel = 0; channel < volume->channels; channel++)
+            f->dst_values[channel] = i->soft_volume.values[channel];
+        pa_queue_push(i->fading_queue, (void *)f);
+#endif
 
         /* Copy the new soft_volume to the thread_info struct */
         pa_assert_se(pa_asyncmsgq_send(i->sink->asyncmsgq, PA_MSGOBJECT(i), PA_SINK_INPUT_MESSAGE_SET_SOFT_VOLUME, NULL, 0, NULL) == 0);
@@ -1050,6 +1097,11 @@ pa_cvolume *pa_sink_input_get_volume(pa_sink_input *i, pa_cvolume *volume, pa_bo
 
 /* Called from main context */
 void pa_sink_input_set_mute(pa_sink_input *i, pa_bool_t mute, pa_bool_t save) {
+#ifdef PA_EXT_USE_VOLUME_FADING
+    pa_cvolume_fading_info *f;
+    unsigned channel;
+#endif
+
     pa_sink_input_assert_ref(i);
     pa_assert_ctl_context();
     pa_assert(PA_SINK_INPUT_IS_LINKED(i->state));
@@ -1059,6 +1111,23 @@ void pa_sink_input_set_mute(pa_sink_input *i, pa_bool_t mute, pa_bool_t save) {
 
     i->muted = mute;
     i->save_muted = save;
+
+#ifdef PA_EXT_USE_VOLUME_FADING
+    f = pa_xnew(pa_cvolume_fading_info, 1);
+    f->remain_frames = i->sample_spec.rate * PA_EXT_FADE_INTERVAL_MSEC / 1000;
+    if (i->muted) {
+        for (channel = 0; channel < i->soft_volume.channels; channel++) {
+            f->cur_values[channel] = i->soft_volume.values[channel];
+            f->dst_values[channel] = PA_VOLUME_MUTED;
+        }
+    } else {
+        for (channel = 0; channel < i->soft_volume.channels; channel++) {
+            f->cur_values[channel] = PA_VOLUME_MUTED;
+            f->dst_values[channel] = i->soft_volume.values[channel];
+        }
+    }
+    pa_queue_push(i->fading_queue, (void *)f);
+#endif
 
     pa_assert_se(pa_asyncmsgq_send(i->sink->asyncmsgq, PA_MSGOBJECT(i), PA_SINK_INPUT_MESSAGE_SET_SOFT_MUTE, NULL, 0, NULL) == 0);
 
@@ -1438,22 +1507,50 @@ void pa_sink_input_set_state_within_thread(pa_sink_input *i, pa_sink_input_state
 /* Called from thread context, except when it is not. */
 int pa_sink_input_process_msg(pa_msgobject *o, int code, void *userdata, int64_t offset, pa_memchunk *chunk) {
     pa_sink_input *i = PA_SINK_INPUT(o);
+#ifdef PA_EXT_USE_VOLUME_FADING
+    pa_cvolume_fading_info *f = NULL;
+#endif
     pa_sink_input_assert_ref(i);
 
     switch (code) {
 
         case PA_SINK_INPUT_MESSAGE_SET_SOFT_VOLUME:
+#ifdef PA_EXT_USE_VOLUME_FADING
+            f = (pa_cvolume_fading_info *)pa_queue_pop(i->fading_queue);
+#endif
             if (!pa_cvolume_equal(&i->thread_info.soft_volume, &i->soft_volume)) {
                 i->thread_info.soft_volume = i->soft_volume;
+#ifdef PA_EXT_USE_VOLUME_FADING
+                if (!i->muted) {
+                    if (pa_cvolume_fading_valid(&i->thread_info.soft_volume))
+                        pa_xfree(i->thread_info.soft_volume.fading_info);
+                    pa_cvolume_fading_set(&i->thread_info.soft_volume, f);
+                } else if (f) {
+                    pa_xfree(f);
+                }
+#endif
                 pa_sink_input_request_rewind(i, 0, TRUE, FALSE, FALSE);
             }
             return 0;
 
         case PA_SINK_INPUT_MESSAGE_SET_SOFT_MUTE:
+#ifdef PA_EXT_USE_VOLUME_FADING
+            f = (pa_cvolume_fading_info *)pa_queue_pop(i->fading_queue);
+#endif
             if (i->thread_info.muted != i->muted) {
                 i->thread_info.muted = i->muted;
+#ifdef PA_EXT_USE_VOLUME_FADING
+                if (pa_cvolume_fading_valid(&i->thread_info.soft_volume))
+                    pa_xfree(i->thread_info.soft_volume.fading_info);
+                pa_cvolume_fading_set(&i->thread_info.soft_volume, f);
+#endif
                 pa_sink_input_request_rewind(i, 0, TRUE, FALSE, FALSE);
             }
+#ifdef PA_EXT_USE_VOLUME_FADING
+            else if (f) {
+                pa_xfree(f);
+            }
+#endif
             return 0;
 
         case PA_SINK_INPUT_MESSAGE_GET_LATENCY: {

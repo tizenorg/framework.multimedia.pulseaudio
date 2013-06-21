@@ -103,6 +103,7 @@ Headers for developing pulseaudio modules
 
 %build
 unset LD_AS_NEEDED
+export CFLAGS+=" -DPA_EXT_USE_VOLUME_FADING"
 export LDFLAGS+="-Wl,--no-as-needed"
 %ifarch %{ix86}
 %reconfigure %{conf_option}

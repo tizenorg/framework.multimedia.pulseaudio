@@ -826,6 +826,9 @@ static void inputs_drop(pa_sink *s, pa_mix_info *info, unsigned n, pa_memchunk *
                     c.length = result->length;
 
                     pa_memchunk_make_writable(&c, 0);
+#ifdef PA_EXT_USE_VOLUME_FADING
+                    pa_cvolume_fading_update(&m->volume, &i->thread_info.soft_volume);
+#endif
                     pa_volume_memchunk(&c, &s->sample_spec, &m->volume);
                 } else {
                     c = s->silence;
@@ -925,8 +928,16 @@ void pa_sink_render(pa_sink*s, size_t length, pa_memchunk *result) {
             result->length = length;
 
         pa_sw_cvolume_multiply(&volume, &s->thread_info.soft_volume, &info[0].volume);
+#ifdef PA_EXT_USE_VOLUME_FADING
+        pa_cvolume_fading_update(&volume, &info[0].volume);
+#endif
 
-        if (s->thread_info.soft_muted || pa_cvolume_is_muted(&volume)) {
+        if (s->thread_info.soft_muted || pa_cvolume_is_muted(&volume)
+#ifdef PA_EXT_USE_VOLUME_FADING
+            && !(pa_cvolume_fading_valid(&volume)
+                && (volume.fading_info->remain_frames > 0))
+#endif
+        ) {
             pa_memblock_unref(result->memblock);
             pa_silence_memchunk_get(&s->core->silence_cache,
                                     s->core->mempool,
@@ -1002,8 +1013,16 @@ void pa_sink_render_into(pa_sink*s, pa_memchunk *target) {
             target->length = length;
 
         pa_sw_cvolume_multiply(&volume, &s->thread_info.soft_volume, &info[0].volume);
+#ifdef PA_EXT_USE_VOLUME_FADING
+        pa_cvolume_fading_update(&volume, &info[0].volume);
+#endif
 
-        if (s->thread_info.soft_muted || pa_cvolume_is_muted(&volume))
+        if (s->thread_info.soft_muted || pa_cvolume_is_muted(&volume)
+#ifdef PA_EXT_USE_VOLUME_FADING
+            && !(pa_cvolume_fading_valid(&volume)
+                && (volume.fading_info->remain_frames > 0))
+#endif
+        )
             pa_silence_memchunk(target, &s->sample_spec);
         else {
             pa_memchunk vchunk;
