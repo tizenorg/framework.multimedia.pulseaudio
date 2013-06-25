@@ -4,10 +4,15 @@
 		<request>
 			<smack request="dbus" type="rw"/>
 			<smack request="system::vconf" type="arwxt"/>
+			<smack request="system::share" type="rwx"/>
+			<smack request="system::homedir" type="arwxt"/>
 			<smack request="deviced" type="w"/>
 			<smack request="device::audio" type="arwxt"/>
 			<smack request="device::recording" type="rw"/>
 			<smack request="bluez" type="rw"/>
+			<smack request="sys-assert::core" type="rwxa"/>
+			<smack request="syslogd" type="w"/>
+			<smack request="_" type="w"/>
 		</request>
 		<permit>
 			<smack permit="dbus" type="rw"/>

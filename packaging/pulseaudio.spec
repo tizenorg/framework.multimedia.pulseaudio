@@ -19,6 +19,7 @@ Requires(post):   /usr/bin/systemctl
 Requires(postun): /usr/bin/systemctl
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig
+Requires(post): sys-assert
 BuildRequires:  pkgconfig(speexdsp)
 BuildRequires:  pkgconfig(sndfile)
 BuildRequires:  pkgconfig(alsa)
