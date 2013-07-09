@@ -1,4 +1,7 @@
 <manifest>
+	<define>
+		<domain name="pulseaudio"/>
+	</define>
 	<assign>
 		<filesystem path="/usr/bin/pulseaudio" label="pulseaudio" exec_label="pulseaudio"/>
 	</assign>
