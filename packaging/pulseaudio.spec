@@ -4,14 +4,14 @@
 Name:       pulseaudio
 Summary:    Improved Linux sound server
 Version:    0.9.23
-Release:    32
+Release:    33
 Group:      Multimedia/PulseAudio
 License:    LGPLv2+
 URL:        http://pulseaudio.org
 Source0:    http://0pointer.de/lennart/projects/pulseaudio/pulseaudio-%{version}.tar.gz
 Source1:    pulseaudio.service
+Source2:    pulseaudio.rule
 Requires:   udev
-Requires:   power-manager
 Requires:   systemd
 Requires(post):   bluez
 Requires(preun):  /usr/bin/systemctl
@@ -34,7 +34,6 @@ BuildRequires:  libtool-ltdl-devel
 BuildRequires:  libtool
 BuildRequires:  intltool
 BuildRequires:  fdupes
-Requires(post): system-server
 
 
 %description
@@ -120,6 +119,8 @@ mkdir -p %{buildroot}%{_libdir}/systemd/system
 install -m 644 %{SOURCE1} %{buildroot}%{_libdir}/systemd/system/pulseaudio.service
 mkdir -p  %{buildroot}%{_libdir}/systemd/system/multi-user.target.wants
 ln -s  ../pulseaudio.service  %{buildroot}%{_libdir}/systemd/system/multi-user.target.wants/pulseaudio.service
+mkdir -p %{buildroot}/opt/etc/smack/accesses.d
+install -m 644 %{SOURCE2} %{buildroot}/opt/etc/smack/accesses.d/pulseaudio.rule
 
 # FIXME: remove initscripts once systemd is enabled
 install -D -m0755 pulseaudio.sh.in %{buildroot}%{_sysconfdir}/rc.d/init.d/pulseaudio.sh
@@ -271,6 +272,7 @@ systemctl daemon-reload
 %exclude /usr/share/vala/vapi/libpulse.vapi
 %{_libdir}/systemd/system/pulseaudio.service
 %{_libdir}/systemd/system/multi-user.target.wants/pulseaudio.service
+/opt/etc/smack/accesses.d/pulseaudio.rule
 
 %files libs
 %defattr(-,root,root,-)
