@@ -4,7 +4,7 @@
 Name:       pulseaudio
 Summary:    Improved Linux sound server
 Version:    0.9.23
-Release:    34
+Release:    35
 Group:      Multimedia/PulseAudio
 License:    LGPLv2+
 URL:        http://pulseaudio.org
@@ -113,6 +113,8 @@ export LDFLAGS+="-Wl,--no-as-needed"
 make %{?jobs:-j%jobs}
 
 %install
+mkdir -p %{buildroot}/usr/share/license
+cp LICENSE %{buildroot}/usr/share/license/%{name}
 %make_install
 
 mkdir -p %{buildroot}%{_libdir}/systemd/system
@@ -273,6 +275,7 @@ systemctl daemon-reload
 %{_libdir}/systemd/system/pulseaudio.service
 %{_libdir}/systemd/system/multi-user.target.wants/pulseaudio.service
 /opt/etc/smack/accesses.d/pulseaudio.rule
+%{_datadir}/license/%{name}
 
 %files libs
 %defattr(-,root,root,-)
