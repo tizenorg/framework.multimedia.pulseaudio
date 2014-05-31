@@ -1,0 +1,12 @@
+pulseaudio dbus rw---
+pulseaudio system::vconf rwxat
+pulseaudio system::share rwx--
+pulseaudio system::homedir rwxat
+pulseaudio deviced -w---
+pulseaudio device::audio rwxat
+pulseaudio device::recording rw---
+pulseaudio bluez rw---
+pulseaudio sys-assert::core rwxa-
+pulseaudio syslogd -w---
+dbus pulseaudio rw---
+

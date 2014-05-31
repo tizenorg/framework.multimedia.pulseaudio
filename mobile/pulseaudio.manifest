@@ -1,0 +1,14 @@
+<manifest>
+	<define>
+		<domain name="pulseaudio"/>
+		<provide>
+			<label name="pulseaudio::record"/>
+		</provide>
+	</define>
+	<assign>
+		<filesystem path="/usr/bin/pulseaudio" label="pulseaudio" exec_label="pulseaudio"/>
+	</assign>
+	<request>
+		<domain name="_"/>
+	</request>
+</manifest>
