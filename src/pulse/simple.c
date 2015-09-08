@@ -335,7 +335,9 @@ pa_simple* pa_simple_new_proplist(
         r = pa_stream_connect_playback(p->stream, dev, attr,
                                        PA_STREAM_INTERPOLATE_TIMING
                                        |PA_STREAM_ADJUST_LATENCY
-                                       |PA_STREAM_AUTO_TIMING_UPDATE, NULL, NULL);
+                                       |PA_STREAM_AUTO_TIMING_UPDATE
+                                       |PA_STREAM_START_MUTED
+                                       , NULL, NULL);
     else
         r = pa_stream_connect_record(p->stream, dev, attr,
                                      PA_STREAM_INTERPOLATE_TIMING
@@ -407,6 +409,9 @@ int pa_simple_write(pa_simple *p, const void*data, size_t length, int *rerror) {
     CHECK_VALIDITY_RETURN_ANY(rerror, length > 0, PA_ERR_INVALID, -1);
 
     pa_threaded_mainloop_lock(p->mainloop);
+#ifdef MUTEX_LOCK_COUNT
+    mutex_lock_count++;
+#endif
 
     CHECK_DEAD_GOTO(p, rerror, unlock_and_fail);
 
@@ -432,10 +437,16 @@ int pa_simple_write(pa_simple *p, const void*data, size_t length, int *rerror) {
     }
 
     pa_threaded_mainloop_unlock(p->mainloop);
+#ifdef MUTEX_LOCK_COUNT
+    mutex_lock_count--;
+#endif
     return 0;
 
 unlock_and_fail:
     pa_threaded_mainloop_unlock(p->mainloop);
+#ifdef MUTEX_LOCK_COUNT
+    mutex_lock_count--;
+#endif
     return -1;
 }
 
@@ -459,9 +470,14 @@ int pa_simple_read(pa_simple *p, void*data, size_t length, int *rerror) {
             r = pa_stream_peek(p->stream, &p->read_data, &p->read_length);
             CHECK_SUCCESS_GOTO(p, rerror, r == 0, unlock_and_fail);
 
-            if (!p->read_data) {
+            if (p->read_length <= 0) {
                 pa_threaded_mainloop_wait(p->mainloop);
                 CHECK_DEAD_GOTO(p, rerror, unlock_and_fail);
+            } else if (!p->read_data) {
+                /* There's a hole in the stream, skip it. We could generate
+                 * silence, but that wouldn't work for compressed streams. */
+                r = pa_stream_drop(p->stream);
+                CHECK_SUCCESS_GOTO(p, rerror, r == 0, unlock_and_fail);
             } else
                 p->read_index = 0;
         }
@@ -617,6 +633,7 @@ unlock_and_fail:
     return -1;
 }
 
+#ifdef __TIZEN__
 int pa_simple_get_stream_index(pa_simple *p, unsigned int *idx, int *rerror) {
     pa_assert(p);
     CHECK_VALIDITY_RETURN_ANY(rerror, idx != NULL, PA_ERR_INVALID, -1);
@@ -683,6 +700,7 @@ unlock_and_fail:
     pa_threaded_mainloop_unlock(p->mainloop);
     return -1;
 }
+#endif
 
 pa_usec_t pa_simple_get_latency(pa_simple *p, int *rerror) {
     pa_usec_t t;
@@ -714,6 +732,32 @@ unlock_and_fail:
     return (pa_usec_t) -1;
 }
 
+pa_usec_t pa_simple_get_final_latency(pa_simple *p, int *rerror) {
+	pa_usec_t t;
+
+	pa_assert(p);
+
+	CHECK_DEAD_GOTO(p, rerror, fail);
+
+	if (p->context->version >= 13) {
+		if (p->direction == PA_STREAM_PLAYBACK) {
+			t = (pa_bytes_to_usec(p->stream->buffer_attr.tlength, &p->stream->sample_spec) + p->stream->timing_info.configured_sink_usec);
+		} else if (p->direction == PA_STREAM_RECORD) {
+			t = (pa_bytes_to_usec(p->stream->buffer_attr.fragsize, &p->stream->sample_spec) + p->stream->timing_info.configured_source_usec);
+		} else {
+			t = (pa_usec_t) -1;
+		}
+	} else {
+		t = (pa_usec_t) -1;
+	}
+
+	return t;
+
+fail:
+	return (pa_usec_t) -1;
+}
+
+#ifdef __TIZEN__
 int pa_simple_cork(pa_simple *p, int cork, int *rerror) {
     pa_operation *o = NULL;
 
@@ -760,3 +804,4 @@ int pa_simple_is_corked(pa_simple *p) {
 
     return is_cork;
 }
+#endif

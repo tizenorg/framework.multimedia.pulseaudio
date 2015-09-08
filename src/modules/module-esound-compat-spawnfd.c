@@ -24,7 +24,6 @@
 #endif
 
 #include <unistd.h>
-#include <string.h>
 #include <errno.h>
 
 #include <pulsecore/core-error.h>
@@ -48,7 +47,8 @@ static const char* const valid_modargs[] = {
 
 int pa__init(pa_module*m) {
     pa_modargs *ma = NULL;
-    int ret = -1, fd = -1;
+    int ret = -1;
+    int32_t fd = -1;
     char x = 1;
 
     pa_assert(m);

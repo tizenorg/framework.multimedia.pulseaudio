@@ -25,24 +25,17 @@
 
 #include <stdio.h>
 #include <unistd.h>
-#include <string.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <sys/types.h>
-#include <sys/stat.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/timeval.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/module.h>
 #include <pulsecore/log.h>
 #include <pulsecore/hashmap.h>
 #include <pulsecore/idxset.h>
-#include <pulsecore/core-util.h>
-#include <pulsecore/namereg.h>
-#include <pulsecore/core-scache.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/dbus-shared.h>
 
@@ -67,6 +60,7 @@ struct userdata {
     pa_core *core;
     pa_dbus_connection *connection;
     pa_hashmap *sessions;
+    pa_bool_t filter_added;
 };
 
 static void add_session(struct userdata *u, const char *id) {
@@ -76,7 +70,7 @@ static void add_session(struct userdata *u, const char *id) {
     struct session *session;
     pa_client_new_data data;
 
-    dbus_error_init (&error);
+    dbus_error_init(&error);
 
     if (pa_hashmap_get(u->sessions, id)) {
         pa_log_warn("Duplicate session %s, ignoring.", id);
@@ -286,6 +280,11 @@ int pa__init(pa_module*m) {
 
     dbus_error_init(&error);
 
+    /* If systemd's logind service is running, we shouldn't watch ConsoleKit
+     * but login */
+    if (access("/run/systemd/seats/", F_OK) >= 0)
+        return 0;
+
     if (!(ma = pa_modargs_new(m->argument, valid_modargs))) {
         pa_log("Failed to parse module arguments");
         goto fail;
@@ -300,7 +299,7 @@ int pa__init(pa_module*m) {
         goto fail;
     }
 
-    m->userdata = u = pa_xnew(struct userdata, 1);
+    m->userdata = u = pa_xnew0(struct userdata, 1);
     u->core = m->core;
     u->module = m;
     u->connection = connection;
@@ -310,6 +309,8 @@ int pa__init(pa_module*m) {
         pa_log_error("Failed to add filter function");
         goto fail;
     }
+
+    u->filter_added = TRUE;
 
     if (pa_dbus_add_matches(
                 pa_dbus_connection_get(connection), &error,
@@ -339,19 +340,14 @@ fail:
 
 void pa__done(pa_module *m) {
     struct userdata *u;
-    struct session *session;
 
     pa_assert(m);
 
     if (!(u = m->userdata))
         return;
 
-    if (u->sessions) {
-        while ((session = pa_hashmap_steal_first(u->sessions)))
-            free_session(session);
-
-        pa_hashmap_free(u->sessions, NULL, NULL);
-    }
+    if (u->sessions)
+        pa_hashmap_free(u->sessions, (pa_free_cb_t) free_session);
 
     if (u->connection) {
         pa_dbus_remove_matches(
@@ -359,7 +355,9 @@ void pa__done(pa_module *m) {
                 "type='signal',sender='org.freedesktop.ConsoleKit',interface='org.freedesktop.ConsoleKit.Seat',member='SessionAdded'",
                 "type='signal',sender='org.freedesktop.ConsoleKit',interface='org.freedesktop.ConsoleKit.Seat',member='SessionRemoved'", NULL);
 
-        dbus_connection_remove_filter(pa_dbus_connection_get(u->connection), filter_cb, u);
+        if (u->filter_added)
+            dbus_connection_remove_filter(pa_dbus_connection_get(u->connection), filter_cb, u);
+
         pa_dbus_connection_unref(u->connection);
     }
 

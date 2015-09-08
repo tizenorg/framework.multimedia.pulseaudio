@@ -20,25 +20,20 @@
     USA.
 ***/
 
-/* TODO: Some plugins cause latency, and some even report it by using a control
-   out port. We don't currently use the latency information. */
-
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
 
+#include <pulse/gccmacro.h>
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 
-#include <pulsecore/core-error.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/namereg.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
-#include <pulsecore/thread.h>
-#include <pulsecore/thread-mq.h>
 #include <pulsecore/rtpoll.h>
 #include <pulsecore/sample-util.h>
 #include <pulsecore/ltdl-helper.h>
@@ -53,16 +48,20 @@ PA_MODULE_USAGE(
         _("sink_name=<name for the sink> "
           "sink_properties=<properties for the sink> "
           "master=<name of sink to filter> "
-          "format=<sample format> "
           "rate=<sample rate> "
           "channels=<number of channels> "
           "channel_map=<channel map> "
+          "use_volume_sharing=<yes or no> "
+          "force_flat_volume=<yes or no> "
         ));
 
 #define MEMBLOCKQ_MAXLENGTH (16*1024*1024)
 
 struct userdata {
     pa_module *module;
+
+    /* FIXME: Uncomment this and take "autoloaded" as a modarg if this is a filter */
+    /* pa_bool_t autoloaded; */
 
     pa_sink *sink;
     pa_sink_input *sink_input;
@@ -77,10 +76,11 @@ static const char* const valid_modargs[] = {
     "sink_name",
     "sink_properties",
     "master",
-    "format",
     "rate",
     "channels",
     "channel_map",
+    "use_volume_sharing",
+    "force_flat_volume",
     NULL
 };
 
@@ -199,7 +199,7 @@ static int sink_input_pop_cb(pa_sink_input *i, size_t nbytes, pa_memchunk *chunk
     size_t fs;
     unsigned n, c;
     pa_memchunk tchunk;
-    pa_usec_t current_latency;
+    pa_usec_t current_latency PA_GCC_UNUSED;
 
     pa_sink_input_assert_ref(i);
     pa_assert(chunk);
@@ -236,8 +236,8 @@ static int sink_input_pop_cb(pa_sink_input *i, size_t nbytes, pa_memchunk *chunk
 
     pa_memblockq_drop(u->memblockq, chunk->length);
 
-    src = (float*) ((uint8_t*) pa_memblock_acquire(tchunk.memblock) + tchunk.index);
-    dst = (float*) pa_memblock_acquire(chunk->memblock);
+    src = pa_memblock_acquire_chunk(&tchunk);
+    dst = pa_memblock_acquire(chunk->memblock);
 
     /* (3) PUT YOUR CODE HERE TO DO SOMETHING WITH THE DATA */
 
@@ -298,6 +298,8 @@ static void sink_input_update_max_rewind_cb(pa_sink_input *i, size_t nbytes) {
     pa_sink_input_assert_ref(i);
     pa_assert_se(u = i->userdata);
 
+    /* FIXME: Too small max_rewind:
+     * https://bugs.freedesktop.org/show_bug.cgi?id=53709 */
     pa_memblockq_set_maxrewind(u->memblockq, nbytes);
     pa_sink_set_max_rewind_within_thread(u->sink, nbytes);
 }
@@ -369,6 +371,9 @@ static void sink_input_attach_cb(pa_sink_input *i) {
      * pa_sink_input_get_max_request(i) UP TO MULTIPLES OF IT
      * HERE. SEE (6) */
     pa_sink_set_max_request_within_thread(u->sink, pa_sink_input_get_max_request(i));
+
+    /* FIXME: Too small max_rewind:
+     * https://bugs.freedesktop.org/show_bug.cgi?id=53709 */
     pa_sink_set_max_rewind_within_thread(u->sink, pa_sink_input_get_max_rewind(i));
 
     pa_sink_attach_within_thread(u->sink);
@@ -410,16 +415,6 @@ static void sink_input_state_change_cb(pa_sink_input *i, pa_sink_input_state_t s
         pa_log_debug("Requesting rewind due to state change.");
         pa_sink_input_request_rewind(i, 0, FALSE, TRUE, TRUE);
     }
-}
-
-/* Called from main context */
-static pa_bool_t sink_input_may_move_to_cb(pa_sink_input *i, pa_sink *dest) {
-    struct userdata *u;
-
-    pa_sink_input_assert_ref(i);
-    pa_assert_se(u = i->userdata);
-
-    return u->sink != dest;
 }
 
 /* Called from main context */
@@ -477,7 +472,9 @@ int pa__init(pa_module*m) {
     pa_sink *master=NULL;
     pa_sink_input_new_data sink_input_data;
     pa_sink_new_data sink_data;
-    pa_bool_t *use_default = NULL;
+    pa_bool_t use_volume_sharing = TRUE;
+    pa_bool_t force_flat_volume = FALSE;
+    pa_memchunk silence;
 
     pa_assert(m);
 
@@ -498,6 +495,21 @@ int pa__init(pa_module*m) {
     map = master->channel_map;
     if (pa_modargs_get_sample_spec_and_channel_map(ma, &ss, &map, PA_CHANNEL_MAP_DEFAULT) < 0) {
         pa_log("Invalid sample format specification or channel map");
+        goto fail;
+    }
+
+    if (pa_modargs_get_value_boolean(ma, "use_volume_sharing", &use_volume_sharing) < 0) {
+        pa_log("use_volume_sharing= expects a boolean argument");
+        goto fail;
+    }
+
+    if (pa_modargs_get_value_boolean(ma, "force_flat_volume", &force_flat_volume) < 0) {
+        pa_log("force_flat_volume= expects a boolean argument");
+        goto fail;
+    }
+
+    if (use_volume_sharing && force_flat_volume) {
+        pa_log("Flat volume can't be forced when using volume sharing.");
         goto fail;
     }
 
@@ -531,9 +543,8 @@ int pa__init(pa_module*m) {
         pa_proplist_setf(sink_data.proplist, PA_PROP_DEVICE_DESCRIPTION, "Virtual Sink %s on %s", sink_data.name, z ? z : master->name);
     }
 
-    u->sink = pa_sink_new(m->core, &sink_data,
-                          PA_SINK_HW_MUTE_CTRL|PA_SINK_HW_VOLUME_CTRL|PA_SINK_DECIBEL_VOLUME|
-                          (master->flags & (PA_SINK_LATENCY|PA_SINK_DYNAMIC_LATENCY)));
+    u->sink = pa_sink_new(m->core, &sink_data, (master->flags & (PA_SINK_LATENCY|PA_SINK_DYNAMIC_LATENCY))
+                                               | (use_volume_sharing ? PA_SINK_SHARE_VOLUME_WITH_MASTER : 0));
     pa_sink_new_data_done(&sink_data);
 
     if (!u->sink) {
@@ -545,8 +556,14 @@ int pa__init(pa_module*m) {
     u->sink->set_state = sink_set_state_cb;
     u->sink->update_requested_latency = sink_update_requested_latency_cb;
     u->sink->request_rewind = sink_request_rewind_cb;
-    u->sink->set_volume = sink_set_volume_cb;
-    u->sink->set_mute = sink_set_mute_cb;
+    pa_sink_set_set_mute_callback(u->sink, sink_set_mute_cb);
+    if (!use_volume_sharing) {
+        pa_sink_set_set_volume_callback(u->sink, sink_set_volume_cb);
+        pa_sink_enable_decibel_volume(u->sink, TRUE);
+    }
+    /* Normally this flag would be enabled automatically be we can force it. */
+    if (force_flat_volume)
+        u->sink->flags |= PA_SINK_FLAT_VOLUME;
     u->sink->userdata = u;
 
     pa_sink_set_asyncmsgq(u->sink, master->asyncmsgq);
@@ -555,8 +572,9 @@ int pa__init(pa_module*m) {
     pa_sink_input_new_data_init(&sink_input_data);
     sink_input_data.driver = __FILE__;
     sink_input_data.module = m;
-    sink_input_data.sink = master;
-    pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_NAME, "Virtual Sink Stream");
+    pa_sink_input_new_data_set_sink(&sink_input_data, master, FALSE);
+    sink_input_data.origin_sink = u->sink;
+    pa_proplist_setf(sink_input_data.proplist, PA_PROP_MEDIA_NAME, "Virtual Sink Stream from %s", pa_proplist_gets(u->sink->proplist, PA_PROP_DEVICE_DESCRIPTION));
     pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ROLE, "filter");
     pa_sink_input_new_data_set_sample_spec(&sink_input_data, &ss);
     pa_sink_input_new_data_set_channel_map(&sink_input_data, &map);
@@ -577,33 +595,29 @@ int pa__init(pa_module*m) {
     u->sink_input->attach = sink_input_attach_cb;
     u->sink_input->detach = sink_input_detach_cb;
     u->sink_input->state_change = sink_input_state_change_cb;
-    u->sink_input->may_move_to = sink_input_may_move_to_cb;
     u->sink_input->moving = sink_input_moving_cb;
-    u->sink_input->volume_changed = sink_input_volume_changed_cb;
+    u->sink_input->volume_changed = use_volume_sharing ? NULL : sink_input_volume_changed_cb;
     u->sink_input->mute_changed = sink_input_mute_changed_cb;
     u->sink_input->userdata = u;
 
-    /* (9) IF YOU REQUIRE A FIXED BLOCK SIZE MAKE SURE TO PASS A
-     * SILENCE MEMBLOCK AS LAST PARAMETER
-     * HERE. pa_sink_input_get_silence() IS USEFUL HERE. */
-    u->memblockq = pa_memblockq_new(0, MEMBLOCKQ_MAXLENGTH, 0, pa_frame_size(&ss), 1, 1, 0, NULL);
+    u->sink->input_to_master = u->sink_input;
 
-    /* (10) INITIALIZE ANYTHING ELSE YOU NEED HERE */
+    pa_sink_input_get_silence(u->sink_input, &silence);
+    u->memblockq = pa_memblockq_new("module-virtual-sink memblockq", 0, MEMBLOCKQ_MAXLENGTH, 0, &ss, 1, 1, 0, &silence);
+    pa_memblock_unref(silence.memblock);
+
+    /* (9) INITIALIZE ANYTHING ELSE YOU NEED HERE */
 
     pa_sink_put(u->sink);
     pa_sink_input_put(u->sink_input);
 
     pa_modargs_free(ma);
 
-    pa_xfree(use_default);
-
     return 0;
 
- fail:
+fail:
     if (ma)
         pa_modargs_free(ma);
-
-    pa_xfree(use_default);
 
     pa__done(m);
 

@@ -30,8 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <pulse/gccmacro.h>
+#include <stdbool.h>
 
 #ifndef PACKAGE
 #error "Please include config.h before including this file!"
@@ -84,6 +83,10 @@ static inline size_t PA_PAGE_ALIGN(size_t l) {
     #define PA_DECLARE_ALIGNED(n,t,v)      t v __attribute__ ((aligned (n)))
 #else
     #define PA_DECLARE_ALIGNED(n,t,v)      t v
+#endif
+
+#ifdef __GNUC__
+#define typeof __typeof__
 #endif
 
 /* The users of PA_MIN and PA_MAX, PA_CLAMP, PA_ROUND_UP should be
@@ -176,7 +179,7 @@ static inline size_t PA_PAGE_ALIGN(size_t l) {
 
 /* This type is not intended to be used in exported APIs! Use classic "int" there! */
 #ifdef HAVE_STD_BOOL
-typedef _Bool pa_bool_t;
+typedef bool pa_bool_t;
 #else
 typedef int pa_bool_t;
 #endif

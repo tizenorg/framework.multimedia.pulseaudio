@@ -23,11 +23,9 @@
 #include <config.h>
 #endif
 
-#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <netinet/in.h>
@@ -40,17 +38,11 @@
 
 #include <pulsecore/core-error.h>
 #include <pulsecore/core-util.h>
-#include <pulsecore/socket-util.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/strbuf.h>
 #include <pulsecore/ioline.h>
-
-#ifdef HAVE_POLL_H
-#include <poll.h>
-#else
-#include <pulsecore/poll.h>
-#endif
+#include <pulsecore/arpa-inet.h>
 
 #include "rtsp_client.h"
 
@@ -151,9 +143,17 @@ static void headers_read(pa_rtsp_client *c) {
 
         /* Now parse out the server port component of the response. */
         while ((token = pa_split(c->transport, delimiters, &token_state))) {
-            if ((pc = strstr(token, "="))) {
+            if ((pc = strchr(token, '='))) {
                 if (0 == strncmp(token, "server_port", 11)) {
-                    pa_atou(pc+1, (uint32_t*)(&c->rtp_port));
+                    uint32_t p;
+
+                    if (pa_atou(pc + 1, &p) < 0 || p <= 0 || p > 0xffff) {
+                        pa_log("Invalid SETUP response (invalid server_port).");
+                        pa_xfree(token);
+                        return;
+                    }
+
+                    c->rtp_port = p;
                     pa_xfree(token);
                     break;
                 }
@@ -195,7 +195,7 @@ static void line_callback(pa_ioline *line, const char *s, void *userdata) {
         *s2p = '\0';
         s2p -= 1;
     }
-    if (c->waiting && 0 == strcmp("RTSP/1.0 200 OK", s2)) {
+    if (c->waiting && pa_streq(s2, "RTSP/1.0 200 OK")) {
         c->waiting = 0;
         if (c->response_headers)
             pa_headerlist_free(c->response_headers);
@@ -332,6 +332,7 @@ int pa_rtsp_connect(pa_rtsp_client *c) {
     pa_xfree(c->session);
     c->session = NULL;
 
+    pa_log_debug("Attempting to connect to server '%s:%d'", c->hostname, c->port);
     if (!(c->sc = pa_socket_client_new_string(c->mainloop, TRUE, c->hostname, c->port))) {
         pa_log("failed to connect to server '%s:%d'", c->hostname, c->port);
         return -1;
@@ -377,8 +378,7 @@ void pa_rtsp_set_url(pa_rtsp_client* c, const char* url) {
     c->url = pa_xstrdup(url);
 }
 
-void pa_rtsp_add_header(pa_rtsp_client *c, const char* key, const char* value)
-{
+void pa_rtsp_add_header(pa_rtsp_client *c, const char* key, const char* value) {
     pa_assert(c);
     pa_assert(key);
     pa_assert(value);
@@ -386,8 +386,7 @@ void pa_rtsp_add_header(pa_rtsp_client *c, const char* key, const char* value)
     pa_headerlist_puts(c->headers, key, value);
 }
 
-void pa_rtsp_remove_header(pa_rtsp_client *c, const char* key)
-{
+void pa_rtsp_remove_header(pa_rtsp_client *c, const char* key) {
     pa_assert(c);
     pa_assert(key);
 

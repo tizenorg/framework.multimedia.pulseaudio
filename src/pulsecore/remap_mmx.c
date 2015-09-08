@@ -24,9 +24,8 @@
 #include <config.h>
 #endif
 
-#include <string.h>
-
 #include <pulse/sample.h>
+#include <pulse/volume.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
 
@@ -103,7 +102,7 @@
                 " emms                          \n\t"
 
 #if defined (__i386__) || defined (__amd64__)
-static void remap_mono_to_stereo_mmx (pa_remap_t *m, void *dst, const void *src, unsigned n) {
+static void remap_mono_to_stereo_mmx(pa_remap_t *m, void *dst, const void *src, unsigned n) {
     pa_reg_x86 temp, temp2;
 
     switch (*m->format) {
@@ -133,7 +132,7 @@ static void remap_mono_to_stereo_mmx (pa_remap_t *m, void *dst, const void *src,
 }
 
 /* set the function that will execute the remapping based on the matrices */
-static void init_remap_mmx (pa_remap_t *m) {
+static void init_remap_mmx(pa_remap_t *m) {
     unsigned n_oc, n_ic;
 
     n_oc = m->o_ss->channels;
@@ -141,20 +140,20 @@ static void init_remap_mmx (pa_remap_t *m) {
 
     /* find some common channel remappings, fall back to full matrix operation. */
     if (n_ic == 1 && n_oc == 2 &&
-            m->map_table_f[0][0] >= 1.0 && m->map_table_f[1][0] >= 1.0) {
+            m->map_table_i[0][0] == PA_VOLUME_NORM && m->map_table_i[1][0] == PA_VOLUME_NORM) {
         m->do_remap = (pa_do_remap_func_t) remap_mono_to_stereo_mmx;
         pa_log_info("Using MMX mono to stereo remapping");
     }
 }
 #endif /* defined (__i386__) || defined (__amd64__) */
 
-void pa_remap_func_init_mmx (pa_cpu_x86_flag_t flags) {
+void pa_remap_func_init_mmx(pa_cpu_x86_flag_t flags) {
 #if defined (__i386__) || defined (__amd64__)
 
     if (flags & PA_CPU_X86_MMX) {
         pa_log_info("Initialising MMX optimized remappers.");
 
-        pa_set_init_remap_func ((pa_init_remap_func_t) init_remap_mmx);
+        pa_set_init_remap_func((pa_init_remap_func_t) init_remap_mmx);
     }
 
 #endif /* defined (__i386__) || defined (__amd64__) */

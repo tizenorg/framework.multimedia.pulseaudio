@@ -24,7 +24,6 @@
 #include <config.h>
 #endif
 
-#include <pulsecore/core.h>
 #include <pulsecore/module.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/modargs.h>
@@ -40,11 +39,13 @@ PA_MODULE_LOAD_ONCE(FALSE);
 PA_MODULE_USAGE(
         "name=<name of the sink, to be prefixed> "
         "sink_name=<name for the sink> "
-        "sink_properities=<properties for the sink> "
+        "sink_properties=<properties for the sink> "
+        "namereg_fail=<when false attempt to synthesise new sink_name if it is already taken> "
         "device=<ALSA device> "
         "device_id=<ALSA card index> "
         "format=<sample format> "
         "rate=<sample rate> "
+        "alternate_rate=<alternate sample rate> "
         "channels=<number of channels> "
         "channel_map=<channel map> "
         "fragments=<number of fragments> "
@@ -54,16 +55,24 @@ PA_MODULE_USAGE(
         "tsched_buffer_size=<buffer size when using timer based scheduling> "
         "tsched_buffer_watermark=<lower fill watermark> "
         "ignore_dB=<ignore dB information from the device?> "
-        "control=<name of mixer control>");
+        "control=<name of mixer control> "
+        "rewind_safeguard=<number of bytes that cannot be rewound> "
+        "deferred_volume=<Synchronize software and hardware volume changes to avoid momentary jumps?> "
+        "deferred_volume_safety_margin=<usec adjustment depending on volume direction> "
+        "deferred_volume_extra_delay=<usec adjustment to HW volume changes> "
+        "fixed_latency_range=<disable latency range changes on underrun?>"
+        "need_audio_pm=<indicates whether this device needs audio power management>");
 
 static const char* const valid_modargs[] = {
     "name",
     "sink_name",
     "sink_properties",
+    "namereg_fail",
     "device",
     "device_id",
     "format",
     "rate",
+    "alternate_rate",
     "channels",
     "channel_map",
     "fragments",
@@ -74,6 +83,15 @@ static const char* const valid_modargs[] = {
     "tsched_buffer_watermark",
     "ignore_dB",
     "control",
+    "rewind_safeguard",
+    "deferred_volume",
+    "deferred_volume_safety_margin",
+    "deferred_volume_extra_delay",
+    "fixed_latency_range",
+    "need_audio_pm",
+#ifdef __TIZEN__
+    "start_threshold",
+#endif
     NULL
 };
 

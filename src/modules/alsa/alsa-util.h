@@ -26,13 +26,9 @@
 #include <asoundlib.h>
 
 #include <pulse/sample.h>
-#include <pulse/volume.h>
-#include <pulse/mainloop-api.h>
 #include <pulse/channelmap.h>
 #include <pulse/proplist.h>
-#include <pulse/volume.h>
 
-#include <pulsecore/llist.h>
 #include <pulsecore/rtpoll.h>
 #include <pulsecore/core.h>
 #include <pulsecore/log.h>
@@ -49,13 +45,25 @@ int pa_alsa_set_hw_params(
         pa_bool_t *use_tsched,             /* modified at return */
         pa_bool_t require_exact_channel_number);
 
+#ifdef __TIZEN__
+int pa_alsa_set_sw_params(
+        snd_pcm_t *pcm,
+        snd_pcm_uframes_t avail_min,
+        pa_bool_t period_event,
+        int start_threshold,
+        int sampling_rate );
+#else
 int pa_alsa_set_sw_params(
         snd_pcm_t *pcm,
         snd_pcm_uframes_t avail_min,
         pa_bool_t period_event);
+#endif
 
 /* Picks a working mapping from the profile set based on the specified ss/map */
 snd_pcm_t *pa_alsa_open_by_device_id_auto(
+#ifdef __TIZEN__
+        pa_core *c,
+#endif
         const char *dev_id,
         char **dev,                       /* modified at return */
         pa_sample_spec *ss,               /* modified at return */
@@ -71,6 +79,9 @@ snd_pcm_t *pa_alsa_open_by_device_id_auto(
 
 /* Uses the specified mapping */
 snd_pcm_t *pa_alsa_open_by_device_id_mapping(
+#ifdef __TIZEN__
+        pa_core *c,
+#endif
         const char *dev_id,
         char **dev,                       /* modified at return */
         pa_sample_spec *ss,               /* modified at return */
@@ -85,6 +96,9 @@ snd_pcm_t *pa_alsa_open_by_device_id_mapping(
 
 /* Opens the explicit ALSA device */
 snd_pcm_t *pa_alsa_open_by_device_string(
+#ifdef __TIZEN__
+        pa_core *c,
+#endif
         const char *dir,
         char **dev,                       /* modified at return */
         pa_sample_spec *ss,               /* modified at return */
@@ -99,6 +113,9 @@ snd_pcm_t *pa_alsa_open_by_device_string(
 
 /* Opens the explicit ALSA device with a fallback list */
 snd_pcm_t *pa_alsa_open_by_template(
+#ifdef __TIZEN__
+        pa_core *c,
+#endif
         char **template,
         const char *dev_id,
         char **dev,                       /* modified at return */
@@ -129,7 +146,7 @@ int pa_alsa_recover_from_poll(snd_pcm_t *pcm, int revents);
 pa_rtpoll_item* pa_alsa_build_pollfd(snd_pcm_t *pcm, pa_rtpoll *rtpoll);
 
 snd_pcm_sframes_t pa_alsa_safe_avail(snd_pcm_t *pcm, size_t hwbuf_size, const pa_sample_spec *ss);
-int pa_alsa_safe_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delay, size_t hwbuf_size, const pa_sample_spec *ss);
+int pa_alsa_safe_delay(snd_pcm_t *pcm, snd_pcm_status_t *status, snd_pcm_sframes_t *delay, size_t hwbuf_size, const pa_sample_spec *ss, pa_bool_t capture);
 int pa_alsa_safe_mmap_begin(snd_pcm_t *pcm, const snd_pcm_channel_area_t **areas, snd_pcm_uframes_t *offset, snd_pcm_uframes_t *frames, size_t hwbuf_size, const pa_sample_spec *ss);
 
 char *pa_alsa_get_driver_name(int card);
@@ -137,11 +154,32 @@ char *pa_alsa_get_driver_name_by_pcm(snd_pcm_t *pcm);
 
 char *pa_alsa_get_reserve_name(const char *device);
 
+unsigned int *pa_alsa_get_supported_rates(snd_pcm_t *pcm, unsigned int fallback_rate);
+
 pa_bool_t pa_alsa_pcm_is_hw(snd_pcm_t *pcm);
 pa_bool_t pa_alsa_pcm_is_modem(snd_pcm_t *pcm);
+#ifdef __TIZEN__
+pa_bool_t pa_alsa_pcm_is_voip(snd_pcm_t *pcm);
+#endif
 
 const char* pa_alsa_strerror(int errnum);
 
 pa_bool_t pa_alsa_may_tsched(pa_bool_t want);
+
+snd_hctl_elem_t* pa_alsa_find_jack(snd_hctl_t *hctl, const char* jack_name);
+snd_hctl_elem_t* pa_alsa_find_eld_ctl(snd_hctl_t *hctl, int device);
+
+snd_mixer_t *pa_alsa_open_mixer(int alsa_card_index, char **ctl_device, snd_hctl_t **hctl);
+
+typedef struct pa_hdmi_eld pa_hdmi_eld;
+struct pa_hdmi_eld {
+    char monitor_name[17];
+};
+
+int pa_alsa_get_hdmi_eld(snd_hctl_t *hctl, int device, pa_hdmi_eld *eld);
+
+#ifdef __TIZEN__
+int pa_alsa_set_mixer_control(const char *ctl_name, int val);
+#endif
 
 #endif

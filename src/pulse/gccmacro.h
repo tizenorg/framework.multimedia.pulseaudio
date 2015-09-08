@@ -25,8 +25,15 @@
 /** \file
  * GCC attribute macros */
 
-#ifdef __GNUC__
+#if defined(__GNUC__)
+#ifdef __MINGW32__
+/* libintl overrides printf with a #define. As this breaks this attribute,
+ * it has a workaround. However the workaround isn't enabled for MINGW
+ * builds (only cygwin) */
+#define PA_GCC_PRINTF_ATTR(a,b) __attribute__ ((format (__printf__, a, b)))
+#else
 #define PA_GCC_PRINTF_ATTR(a,b) __attribute__ ((format (printf, a, b)))
+#endif
 #else
 /** If we're in GNU C, use some magic for detecting invalid format strings */
 #define PA_GCC_PRINTF_ATTR(a,b)
@@ -49,7 +56,7 @@
 #ifdef __GNUC__
 #define PA_GCC_UNUSED __attribute__ ((unused))
 #else
-/** Macro for not used parameter */
+/** Macro for not used function, variable or parameter */
 #define PA_GCC_UNUSED
 #endif
 
@@ -119,8 +126,8 @@
 
 #ifndef PA_GCC_WEAKREF
 #if defined(__GNUC__) && defined(__ELF__) && (((__GNUC__ == 4) && (__GNUC_MINOR__ > 1)) || (__GNUC__ > 4))
-/** Macro for usgae of GCC's weakref attribute */
-#define PA_GCC_WEAKREF(x) __attribute__((weakref(#x)));
+/** Macro for usage of GCC's weakref attribute */
+#define PA_GCC_WEAKREF(x) __attribute__((weakref(#x)))
 #endif
 #endif
 

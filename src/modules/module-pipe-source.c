@@ -27,12 +27,13 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
-#include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
 #include <sys/ioctl.h>
-#include <sys/poll.h>
+
+#ifdef HAVE_SYS_FILIO_H
+#include <sys/filio.h>
+#endif
 
 #include <pulse/xmalloc.h>
 
@@ -45,6 +46,7 @@
 #include <pulsecore/thread.h>
 #include <pulsecore/thread-mq.h>
 #include <pulsecore/rtpoll.h>
+#include <pulsecore/poll.h>
 
 #include "module-pipe-source-symdef.h"
 
@@ -105,9 +107,10 @@ static int source_process_msg(
 
         case PA_SOURCE_MESSAGE_GET_LATENCY: {
             size_t n = 0;
-            int l;
 
 #ifdef FIONREAD
+            int l;
+
             if (ioctl(u->fd, FIONREAD, &l) >= 0 && l > 0)
                 n = (size_t) l;
 #endif
@@ -159,7 +162,7 @@ static void thread_func(void *userdata) {
                 if (errno == EINTR)
                     continue;
                 else if (errno != EAGAIN) {
-                    pa_log("Faile to read data from FIFO: %s", pa_cstrerror(errno));
+                    pa_log("Failed to read data from FIFO: %s", pa_cstrerror(errno));
                     goto fail;
                 }
 
@@ -205,7 +208,7 @@ finish:
     pa_log_debug("Thread shutting down");
 }
 
-int pa__init(pa_module*m) {
+int pa__init(pa_module *m) {
     struct userdata *u;
     struct stat st;
     pa_sample_spec ss;
@@ -217,14 +220,14 @@ int pa__init(pa_module*m) {
     pa_assert(m);
 
     if (!(ma = pa_modargs_new(m->argument, valid_modargs))) {
-        pa_log("failed to parse module arguments.");
+        pa_log("Failed to parse module arguments.");
         goto fail;
     }
 
     ss = m->core->default_sample_spec;
     map = m->core->default_channel_map;
     if (pa_modargs_get_sample_spec_and_channel_map(ma, &ss, &map, PA_CHANNEL_MAP_DEFAULT) < 0) {
-        pa_log("invalid sample format specification or channel map");
+        pa_log("Invalid sample format specification or channel map");
         goto fail;
     }
 
@@ -237,17 +240,19 @@ int pa__init(pa_module*m) {
 
     u->filename = pa_runtime_path(pa_modargs_get_value(ma, "file", DEFAULT_FILE_NAME));
 
-    mkfifo(u->filename, 0666);
-    if ((u->fd = open(u->filename, O_RDWR|O_NOCTTY)) < 0) {
+    if (mkfifo(u->filename, 0666) < 0) {
+        pa_log("mkfifo('%s'): %s", u->filename, pa_cstrerror(errno));
+        goto fail;
+    }
+    if ((u->fd = pa_open_cloexec(u->filename, O_RDWR, 0)) < 0) {
         pa_log("open('%s'): %s", u->filename, pa_cstrerror(errno));
         goto fail;
     }
 
-    pa_make_fd_cloexec(u->fd);
     pa_make_fd_nonblock(u->fd);
 
     if (fstat(u->fd, &st) < 0) {
-        pa_log("fstat('%s'): %s",u->filename, pa_cstrerror(errno));
+        pa_log("fstat('%s'): %s", u->filename, pa_cstrerror(errno));
         goto fail;
     }
 
@@ -284,14 +289,14 @@ int pa__init(pa_module*m) {
 
     pa_source_set_asyncmsgq(u->source, u->thread_mq.inq);
     pa_source_set_rtpoll(u->source, u->rtpoll);
-    pa_source_set_fixed_latency(u->source, pa_bytes_to_usec(PIPE_BUF, &u->source->sample_spec));
+    pa_source_set_fixed_latency(u->source, pa_bytes_to_usec(pa_pipe_buf(u->fd), &u->source->sample_spec));
 
     u->rtpoll_item = pa_rtpoll_item_new(u->rtpoll, PA_RTPOLL_NEVER, 1);
     pollfd = pa_rtpoll_item_get_pollfd(u->rtpoll_item, NULL);
     pollfd->fd = u->fd;
     pollfd->events = pollfd->revents = 0;
 
-    if (!(u->thread = pa_thread_new(thread_func, u))) {
+    if (!(u->thread = pa_thread_new("pipe-source", thread_func, u))) {
         pa_log("Failed to create thread.");
         goto fail;
     }
@@ -320,7 +325,7 @@ int pa__get_n_used(pa_module *m) {
     return pa_source_linked_by(u->source);
 }
 
-void pa__done(pa_module*m) {
+void pa__done(pa_module *m) {
     struct userdata *u;
 
     pa_assert(m);

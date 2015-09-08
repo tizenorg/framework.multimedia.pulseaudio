@@ -24,6 +24,7 @@
 
 #include <pulse/mainloop-api.h>
 #include <pulse/sample.h>
+#include <pulsecore/cpu.h>
 
 typedef struct pa_core pa_core;
 
@@ -34,6 +35,10 @@ typedef enum pa_suspend_cause {
     PA_SUSPEND_APPLICATION = 2,  /* Used by the device reservation logic */
     PA_SUSPEND_IDLE = 4,         /* Used by module-suspend-on-idle */
     PA_SUSPEND_SESSION = 8,      /* Used by module-hal for mark inactive sessions */
+    PA_SUSPEND_PASSTHROUGH = 16, /* Used to suspend monitor sources when the sink is in passthrough mode */
+#ifdef __TIZEN__
+    PA_SUSPEND_SWITCH = 32, /* Used to suspend for switching device */
+#endif /* __TIZEN__ */
     PA_SUSPEND_ALL = 0xFFFF      /* Magic cause that can be used to resume forcibly */
 } pa_suspend_cause_t;
 
@@ -41,7 +46,6 @@ typedef enum pa_suspend_cause {
 #include <pulsecore/hashmap.h>
 #include <pulsecore/memblock.h>
 #include <pulsecore/resampler.h>
-#include <pulsecore/queue.h>
 #include <pulsecore/llist.h>
 #include <pulsecore/hook-list.h>
 #include <pulsecore/asyncmsgq.h>
@@ -49,8 +53,14 @@ typedef enum pa_suspend_cause {
 #include <pulsecore/sink.h>
 #include <pulsecore/source.h>
 #include <pulsecore/core-subscribe.h>
-#include <pulsecore/sink-input.h>
 #include <pulsecore/msgobject.h>
+
+typedef enum pa_server_type {
+    PA_SERVER_TYPE_UNSET,
+    PA_SERVER_TYPE_USER,
+    PA_SERVER_TYPE_SYSTEM,
+    PA_SERVER_TYPE_NONE
+} pa_server_type_t;
 
 typedef enum pa_core_state {
     PA_CORE_STARTUP,
@@ -66,6 +76,8 @@ typedef enum pa_core_hook {
     PA_CORE_HOOK_SINK_UNLINK_POST,
     PA_CORE_HOOK_SINK_STATE_CHANGED,
     PA_CORE_HOOK_SINK_PROPLIST_CHANGED,
+    PA_CORE_HOOK_SINK_PORT_CHANGED,
+    PA_CORE_HOOK_SINK_FLAGS_CHANGED,
     PA_CORE_HOOK_SOURCE_NEW,
     PA_CORE_HOOK_SOURCE_FIXATE,
     PA_CORE_HOOK_SOURCE_PUT,
@@ -73,6 +85,8 @@ typedef enum pa_core_hook {
     PA_CORE_HOOK_SOURCE_UNLINK_POST,
     PA_CORE_HOOK_SOURCE_STATE_CHANGED,
     PA_CORE_HOOK_SOURCE_PROPLIST_CHANGED,
+    PA_CORE_HOOK_SOURCE_PORT_CHANGED,
+    PA_CORE_HOOK_SOURCE_FLAGS_CHANGED,
     PA_CORE_HOOK_SINK_INPUT_NEW,
     PA_CORE_HOOK_SINK_INPUT_FIXATE,
     PA_CORE_HOOK_SINK_INPUT_PUT,
@@ -103,6 +117,11 @@ typedef enum pa_core_hook {
     PA_CORE_HOOK_CARD_NEW,
     PA_CORE_HOOK_CARD_PUT,
     PA_CORE_HOOK_CARD_UNLINK,
+    PA_CORE_HOOK_CARD_PROFILE_CHANGED,
+    PA_CORE_HOOK_CARD_PROFILE_ADDED,
+    PA_CORE_HOOK_CARD_PROFILE_AVAILABLE_CHANGED,
+    PA_CORE_HOOK_PORT_AVAILABLE_CHANGED,
+    PA_CORE_HOOK_PORT_LATENCY_OFFSET_CHANGED,
     PA_CORE_HOOK_MAX
 } pa_core_hook_t;
 
@@ -133,7 +152,10 @@ struct pa_core {
 
     pa_channel_map default_channel_map;
     pa_sample_spec default_sample_spec;
+    uint32_t alternate_sample_rate;
     unsigned default_n_fragments, default_fragment_size_msec;
+    unsigned deferred_volume_safety_margin_usec;
+    int deferred_volume_extra_delay_usec;
 
     pa_defer_event *module_defer_unload_event;
 
@@ -157,12 +179,23 @@ struct pa_core {
     pa_bool_t realtime_scheduling:1;
     pa_bool_t disable_remixing:1;
     pa_bool_t disable_lfe_remixing:1;
+    pa_bool_t deferred_volume:1;
 
     pa_resample_method_t resample_method;
     int realtime_priority;
 
+    pa_server_type_t server_type;
+    pa_cpu_info cpu_info;
+
     /* hooks */
     pa_hook hooks[PA_CORE_HOOK_MAX];
+
+#ifdef __TIZEN__
+    pa_bool_t dump_sink;
+    pa_bool_t dump_sink_input;
+    pa_bool_t dump_source;
+    pa_bool_t dump_source_output;
+#endif
 };
 
 PA_DECLARE_PUBLIC_CLASS(pa_core);
@@ -175,7 +208,7 @@ enum {
 
 pa_core* pa_core_new(pa_mainloop_api *m, pa_bool_t shared, size_t shm_size);
 
-/* Check whether noone is connected to this core */
+/* Check whether no one is connected to this core */
 void pa_core_check_idle(pa_core *c);
 
 int pa_core_exit(pa_core *c, pa_bool_t force, int retval);

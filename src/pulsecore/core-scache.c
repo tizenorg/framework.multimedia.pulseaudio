@@ -25,13 +25,13 @@
 #endif
 
 #include <stdlib.h>
-#include <string.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <limits.h>
+#include <time.h>
 
 #ifdef HAVE_GLOB_H
 #include <glob.h>
@@ -50,7 +50,6 @@
 #include <pulse/rtclock.h>
 
 #include <pulsecore/sink-input.h>
-#include <pulsecore/sample-util.h>
 #include <pulsecore/play-memchunk.h>
 #include <pulsecore/core-subscribe.h>
 #include <pulsecore/namereg.h>
@@ -193,7 +192,7 @@ int pa_scache_add_item(
     if (idx)
         *idx = e->index;
 
-    pa_log_debug("Created sample \"%s\" (#%d), %lu bytes with sample spec %s",
+    pa_log_debug_verbose("Created sample \"%s\" (#%d), %lu bytes with sample spec %s",
                  name, e->index, (unsigned long) e->memchunk.length,
                  pa_sample_spec_snprint(st, sizeof(st), &e->sample_spec));
 
@@ -275,7 +274,7 @@ int pa_scache_remove_item(pa_core *c, const char *name) {
 
     pa_assert_se(pa_idxset_remove_by_data(c->scache, e, NULL) == e);
 
-    pa_log_debug("Removed sample \"%s\"", name);
+    pa_log_debug_verbose("Removed sample \"%s\"", name);
 
     free_entry(e);
 
@@ -283,12 +282,9 @@ int pa_scache_remove_item(pa_core *c, const char *name) {
 }
 
 void pa_scache_free_all(pa_core *c) {
-    pa_scache_entry *e;
-
     pa_assert(c);
 
-    while ((e = pa_idxset_steal_first(c->scache, NULL)))
-        free_entry(e);
+    pa_idxset_remove_all(c->scache, (pa_free_cb_t) free_entry);
 
     if (c->scache_auto_unload_event) {
         c->mainloop->time_free(c->scache_auto_unload_event);
@@ -310,7 +306,8 @@ int pa_scache_play_item(pa_core *c, const char *name, pa_sink *sink, pa_volume_t
         return -1;
 
     merged = pa_proplist_new();
-    pa_proplist_setf(merged, PA_PROP_MEDIA_NAME, "Sample %s", name);
+    pa_proplist_sets(merged, PA_PROP_MEDIA_NAME, name);
+    pa_proplist_sets(merged, PA_PROP_EVENT_ID, name);
 
     if (e->lazy && !e->memchunk.memblock) {
         pa_channel_map old_channel_map = e->channel_map;
@@ -331,16 +328,16 @@ int pa_scache_play_item(pa_core *c, const char *name, pa_sink *sink, pa_volume_t
     if (!e->memchunk.memblock)
         goto fail;
 
-    pa_log_debug("Playing sample \"%s\" on \"%s\"", name, sink->name);
+    pa_log_debug_verbose("Playing sample \"%s\" on \"%s\"", name, sink->name);
 
     pass_volume = TRUE;
 
-    if (e->volume_is_set && volume != PA_VOLUME_INVALID) {
+    if (e->volume_is_set && PA_VOLUME_IS_VALID(volume)) {
         pa_cvolume_set(&r, e->sample_spec.channels, volume);
         pa_sw_cvolume_multiply(&r, &r, &e->volume);
     } else if (e->volume_is_set)
         r = e->volume;
-    else if (volume != PA_VOLUME_INVALID)
+    else if (PA_VOLUME_IS_VALID(volume))
         pa_cvolume_set(&r, e->sample_spec.channels, volume);
     else
         pass_volume = FALSE;
@@ -350,7 +347,12 @@ int pa_scache_play_item(pa_core *c, const char *name, pa_sink *sink, pa_volume_t
     if (p)
         pa_proplist_update(merged, PA_UPDATE_REPLACE, p);
 
-    if (pa_play_memchunk(sink, &e->sample_spec, &e->channel_map, &e->memchunk, pass_volume ? &r : NULL, merged, sink_input_idx) < 0)
+    if (pa_play_memchunk(sink,
+                         &e->sample_spec, &e->channel_map,
+                         &e->memchunk,
+                         pass_volume ? &r : NULL,
+                         merged,
+                         PA_SINK_INPUT_NO_CREATE_ON_SUSPEND|PA_SINK_INPUT_KILL_ON_SUSPEND, sink_input_idx) < 0)
         goto fail;
 
     pa_proplist_free(merged);
@@ -411,7 +413,7 @@ size_t pa_scache_total_size(pa_core *c) {
     if (!c->scache || !pa_idxset_size(c->scache))
         return 0;
 
-    for (e = pa_idxset_first(c->scache, &idx); e; e = pa_idxset_next(c->scache, &idx))
+    PA_IDXSET_FOREACH(e, c->scache, idx)
         if (e->memchunk.memblock)
             sum += e->memchunk.length;
 
@@ -430,7 +432,7 @@ void pa_scache_unload_unused(pa_core *c) {
 
     time(&now);
 
-    for (e = pa_idxset_first(c->scache, &idx); e; e = pa_idxset_next(c->scache, &idx)) {
+    PA_IDXSET_FOREACH(e, c->scache, idx) {
 
         if (!e->lazy || !e->memchunk.memblock)
             continue;

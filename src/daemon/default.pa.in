@@ -18,14 +18,20 @@
 
 # This startup script is used only if PulseAudio is started per-user
 # (i.e. not in system mode)
+changequote(`[', `]')dnl Set up m4 quoting
 
 .nofail
 
 ### Load something into the sample cache
+ifelse(@OS_IS_WIN32@, 1, [dnl
+load-sample x11-bell %WINDIR%\Media\ding.wav
+load-sample-dir-lazy %WINDIR%\Media\*.wav
+], [dnl
 #load-sample-lazy x11-bell /usr/share/sounds/gtk-events/activate.wav
 #load-sample-lazy pulse-hotplug /usr/share/sounds/startup3.wav
 #load-sample-lazy pulse-coldplug /usr/share/sounds/startup3.wav
 #load-sample-lazy pulse-access /usr/share/sounds/generic.wav
+])dnl
 
 .fail
 
@@ -38,47 +44,80 @@ load-module module-card-restore
 ### stored in /usr/share/application
 load-module module-augment-properties
 
-### Load audio drivers statically (it's probably better to not load
-### these drivers manually, but instead use module-hal-detect --
-### see below -- for doing this automatically)
+### Should be after module-*-restore but before module-*-detect
+load-module module-switch-on-port-available
+
+### Load audio drivers statically
+### (it's probably better to not load these drivers manually, but instead
+### use module-udev-detect -- see below -- for doing this automatically)
+ifelse(@HAVE_ALSA@, 1, [dnl
 #load-module module-alsa-sink
 #load-module module-alsa-source device=hw:1,0
+])dnl
+ifelse(@HAVE_OSS_OUTPUT@, 1, [dnl
 #load-module module-oss device="/dev/dsp" sink_name=output source_name=input
 #load-module module-oss-mmap device="/dev/dsp" sink_name=output source_name=input
+])dnl
+ifelse(@HAVE_WAVEOUT@, 1, [dnl
+load-module module-waveout sink_name=output source_name=input
+])dnl
 #load-module module-null-sink
+ifelse(@HAVE_MKFIFO@, 1, [dnl
 #load-module module-pipe-sink
+])dnl
 
 ### Automatically load driver modules depending on the hardware available
+ifelse(@HAVE_UDEV@, 1, [dnl
 .ifexists module-udev-detect@PA_SOEXT@
-#load-module module-udev-detect
+load-module module-udev-detect
 .else
-### Alternatively use the static hardware detection module (for systems that
-### lack udev support)
-#load-module module-detect
+], [dnl
+.ifexists module-detect@PA_SOEXT@
+])dnl
+### Use the static hardware detection module (for systems that lack udev support)
+load-module module-detect
 .endif
 
+### Automatically connect sink and source if JACK server is present
+.ifexists module-jackdbus-detect@PA_SOEXT@
+.nofail
+load-module module-jackdbus-detect channels=2
+.fail
+.endif
+
+ifelse(@HAVE_BLUEZ@, 1, [dnl
 ### Automatically load driver modules for Bluetooth hardware
+.ifexists module-bluetooth-policy@PA_SOEXT@
+load-module module-bluetooth-policy
+.endif
+
 .ifexists module-bluetooth-discover@PA_SOEXT@
 load-module module-bluetooth-discover
 .endif
+])dnl
 
+ifelse(@HAVE_AF_UNIX@, 1, [dnl
 ### Load several protocols
 .ifexists module-esound-protocol-unix@PA_SOEXT@
 load-module module-esound-protocol-unix
 .endif
 load-module module-native-protocol-unix
+])dnl
 
 ### Network access (may be configured with paprefs, so leave this commented
 ### here if you plan to use paprefs)
 #load-module module-esound-protocol-tcp
 #load-module module-native-protocol-tcp
+ifelse(@HAVE_AVAHI@, 1, [dnl
 #load-module module-zeroconf-publish
+])dnl
 
-### Load the RTP reciever module (also configured via paprefs, see above)
+ifelse(@OS_IS_WIN32@, 0, [dnl
+### Load the RTP receiver module (also configured via paprefs, see above)
 #load-module module-rtp-recv
 
 ### Load the RTP sender module (also configured via paprefs, see above)
-#load-module module-null-sink sink_name=rtp format=s16be channels=2 rate=44100 description="RTP Multicast Sink"
+#load-module module-null-sink sink_name=rtp format=s16be channels=2 rate=44100 sink_properties="device.description='RTP Multicast Sink'"
 #load-module module-rtp-send source=rtp.monitor
 
 ### Load additional modules from GConf settings. This can be configured with the paprefs tool.
@@ -90,7 +129,10 @@ load-module module-gconf
 .fail
 .endif
 
-### Automatically restore the default sink/source when changed by the user during runtime
+### Automatically restore the default sink/source when changed by the user
+### during runtime
+### NOTE: This should be loaded as early as possible so that subsequent modules
+### that look up the default sink/source get the right value
 load-module module-default-device-restore
 
 ### Automatically move streams to the default sink if the sink they are
@@ -108,14 +150,35 @@ load-module module-suspend-on-idle
 
 ### If autoexit on idle is enabled we want to make sure we only quit
 ### when no local session needs us anymore.
+.ifexists module-console-kit@PA_SOEXT@
 load-module module-console-kit
+.endif
+.ifexists module-systemd-login@PA_SOEXT@
+load-module module-systemd-login
+.endif
 
 ### Enable positioned event sounds
 load-module module-position-event-sounds
 
-### Cork music streams when a phone stream is active
-load-module module-cork-music-on-phone
+### Cork music/video streams when a phone stream is active
+load-module module-role-cork
 
+### Modules to allow autoloading of filters (such as echo cancellation)
+### on demand. module-filter-heuristics tries to determine what filters
+### make sense, and module-filter-apply does the heavy-lifting of
+### loading modules and rerouting streams.
+load-module module-filter-heuristics
+load-module module-filter-apply
+])dnl
+
+ifelse(@HAVE_DBUS@, 1, [dnl
+### Load DBus protocol
+.ifexists module-dbus-protocol@PA_SOEXT@
+load-module module-dbus-protocol
+.endif
+])dnl
+
+ifelse(@HAVE_X11@, 1, [dnl
 # X11 modules should not be started from default.pa so that one daemon
 # can be shared by multiple sessions.
 
@@ -131,6 +194,7 @@ load-module module-cork-music-on-phone
 #load-module module-x11-publish
 #.fail
 #.endif
+])dnl
 
 ### Make some devices default
 #set-default-sink output

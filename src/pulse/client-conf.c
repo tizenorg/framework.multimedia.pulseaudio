@@ -27,11 +27,10 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
-#include <string.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/core-error.h>
 #include <pulsecore/log.h>
@@ -57,11 +56,14 @@ static const pa_client_conf default_conf = {
     .default_sink = NULL,
     .default_source = NULL,
     .default_server = NULL,
+    .default_dbus_server = NULL,
     .autospawn = TRUE,
     .disable_shm = FALSE,
     .cookie_file = NULL,
     .cookie_valid = FALSE,
-    .shm_size = 0
+    .shm_size = 0,
+    .auto_connect_localhost = FALSE,
+    .auto_connect_display = FALSE
 };
 
 pa_client_conf *pa_client_conf_new(void) {
@@ -69,7 +71,7 @@ pa_client_conf *pa_client_conf_new(void) {
 
     c->daemon_binary = pa_xstrdup(PA_BINARY);
     c->extra_arguments = pa_xstrdup("--log-target=syslog");
-    c->cookie_file = pa_xstrdup(PA_NATIVE_COOKIE_FILE);
+    c->cookie_file = NULL;
 
     return c;
 }
@@ -81,6 +83,7 @@ void pa_client_conf_free(pa_client_conf *c) {
     pa_xfree(c->default_sink);
     pa_xfree(c->default_source);
     pa_xfree(c->default_server);
+    pa_xfree(c->default_dbus_server);
     pa_xfree(c->cookie_file);
     pa_xfree(c);
 }
@@ -97,17 +100,20 @@ int pa_client_conf_load(pa_client_conf *c, const char *filename) {
         { "default-sink",           pa_config_parse_string,   &c->default_sink, NULL },
         { "default-source",         pa_config_parse_string,   &c->default_source, NULL },
         { "default-server",         pa_config_parse_string,   &c->default_server, NULL },
+        { "default-dbus-server",    pa_config_parse_string,   &c->default_dbus_server, NULL },
         { "autospawn",              pa_config_parse_bool,     &c->autospawn, NULL },
         { "cookie-file",            pa_config_parse_string,   &c->cookie_file, NULL },
         { "disable-shm",            pa_config_parse_bool,     &c->disable_shm, NULL },
         { "enable-shm",             pa_config_parse_not_bool, &c->disable_shm, NULL },
         { "shm-size-bytes",         pa_config_parse_size,     &c->shm_size, NULL },
+        { "auto-connect-localhost", pa_config_parse_bool,     &c->auto_connect_localhost, NULL },
+        { "auto-connect-display",   pa_config_parse_bool,     &c->auto_connect_display, NULL },
         { NULL,                     NULL,                     NULL, NULL },
     };
 
     if (filename) {
 
-        if (!(f = fopen(filename, "r"))) {
+        if (!(f = pa_fopen_cloexec(filename, "r"))) {
             pa_log(_("Failed to open configuration file '%s': %s"), fn, pa_cstrerror(errno));
             goto finish;
         }
@@ -121,7 +127,7 @@ int pa_client_conf_load(pa_client_conf *c, const char *filename) {
                 goto finish;
     }
 
-    r = f ? pa_config_parse(fn, f, table, NULL) : 0;
+    r = f ? pa_config_parse(fn, f, table, NULL, NULL) : 0;
 
     if (!r)
         r = pa_client_conf_load_cookie(c);
@@ -172,15 +178,27 @@ int pa_client_conf_env(pa_client_conf *c) {
 }
 
 int pa_client_conf_load_cookie(pa_client_conf* c) {
-    pa_assert(c);
+    int k;
 
-    if (!c->cookie_file)
-        return -1;
+    pa_assert(c);
 
     c->cookie_valid = FALSE;
 
-    if (pa_authkey_load_auto(c->cookie_file, c->cookie, sizeof(c->cookie)) < 0)
-        return -1;
+    if (c->cookie_file)
+        k = pa_authkey_load_auto(c->cookie_file, TRUE, c->cookie, sizeof(c->cookie));
+    else {
+        k = pa_authkey_load_auto(PA_NATIVE_COOKIE_FILE, FALSE, c->cookie, sizeof(c->cookie));
+
+        if (k < 0) {
+            k = pa_authkey_load_auto(PA_NATIVE_COOKIE_FILE_FALLBACK, FALSE, c->cookie, sizeof(c->cookie));
+
+            if (k < 0)
+                k = pa_authkey_load_auto(PA_NATIVE_COOKIE_FILE, TRUE, c->cookie, sizeof(c->cookie));
+        }
+    }
+
+    if (k < 0)
+        return k;
 
     c->cookie_valid = TRUE;
     return 0;

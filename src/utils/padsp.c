@@ -118,6 +118,7 @@ static PA_LLIST_HEAD(fd_info, fd_infos) = NULL;
 static int (*_ioctl)(int, int, void*) = NULL;
 static int (*_close)(int) = NULL;
 static int (*_open)(const char *, int, mode_t) = NULL;
+static int (*___open_2)(const char *, int) = NULL;
 static FILE* (*_fopen)(const char *path, const char *mode) = NULL;
 static int (*_stat)(const char *, struct stat *) = NULL;
 #ifdef _STAT_VER
@@ -125,6 +126,7 @@ static int (*___xstat)(int, const char *, struct stat *) = NULL;
 #endif
 #ifdef HAVE_OPEN64
 static int (*_open64)(const char *, int, mode_t) = NULL;
+static int (*___open64_2)(const char *, int) = NULL;
 static FILE* (*_fopen64)(const char *path, const char *mode) = NULL;
 static int (*_stat64)(const char *, struct stat64 *) = NULL;
 #ifdef _STAT_VER
@@ -157,11 +159,27 @@ do { \
     pthread_mutex_unlock(&func_mutex); \
 } while(0)
 
+#define LOAD___OPEN_2_FUNC() \
+do { \
+    pthread_mutex_lock(&func_mutex); \
+    if (!___open_2) \
+        ___open_2 = (int (*)(const char *, int)) dlsym_fn(RTLD_NEXT, "__open_2"); \
+    pthread_mutex_unlock(&func_mutex); \
+} while(0)
+
 #define LOAD_OPEN64_FUNC() \
 do { \
     pthread_mutex_lock(&func_mutex); \
     if (!_open64) \
         _open64 = (int (*)(const char *, int, mode_t)) dlsym_fn(RTLD_NEXT, "open64"); \
+    pthread_mutex_unlock(&func_mutex); \
+} while(0)
+
+#define LOAD___OPEN64_2_FUNC() \
+do { \
+    pthread_mutex_lock(&func_mutex); \
+    if (!___open64_2) \
+        ___open64_2 = (int (*)(const char *, int)) dlsym_fn(RTLD_NEXT, "__open64_2"); \
     pthread_mutex_unlock(&func_mutex); \
 } while(0)
 
@@ -264,7 +282,7 @@ static void debug(int level, const char *format, ...) PA_GCC_PRINTF_ATTR(2,3);
 
 #define DEBUG_LEVEL_ALWAYS                0
 #define DEBUG_LEVEL_NORMAL                1
-#define DEBUG_LEVEL_VERBOSE                2
+#define DEBUG_LEVEL_VERBOSE               2
 
 static void debug(int level, const char *format, ...) {
     va_list ap;
@@ -904,8 +922,21 @@ static int fd_info_copy_data(fd_info *i, int force) {
                 return -1;
             }
 
-            if (!data)
+            if (len <= 0)
                 break;
+
+            if (!data) {
+                /* Maybe we should generate silence here, but I'm lazy and
+                 * I'll just skip any holes in the stream. */
+                if (pa_stream_drop(i->rec_stream) < 0) {
+                    debug(DEBUG_LEVEL_NORMAL, __FILE__": pa_stream_drop(): %s\n", pa_strerror(pa_context_errno(i->context)));
+                    return -1;
+                }
+
+                assert(n >= len);
+                n -= len;
+                continue;
+            }
 
             buf = (const char*)data + i->rec_offset;
 
@@ -1204,7 +1235,7 @@ fail:
 static void sink_info_cb(pa_context *context, const pa_sink_info *si, int eol, void *userdata) {
     fd_info *i = userdata;
 
-    if (!si || eol < 0) {
+    if (eol < 0) {
         i->operation_success = 0;
         pa_threaded_mainloop_signal(i->mainloop, 0);
         return;
@@ -1226,7 +1257,7 @@ static void sink_info_cb(pa_context *context, const pa_sink_info *si, int eol, v
 static void source_info_cb(pa_context *context, const pa_source_info *si, int eol, void *userdata) {
     fd_info *i = userdata;
 
-    if (!si || eol < 0) {
+    if (eol < 0) {
         i->operation_success = 0;
         pa_threaded_mainloop_signal(i->mainloop, 0);
         return;
@@ -1426,6 +1457,7 @@ static int sndstat_open(int flags, int *_errno) {
 
     unlink(fn);
     pa_xfree(fn);
+    fn = NULL;
 
     if (write(fd, sndstat, sizeof(sndstat) -1) != sizeof(sndstat)-1) {
         *_errno = errno;
@@ -1458,11 +1490,11 @@ static int real_open(const char *filename, int flags, mode_t mode) {
         return _open(filename, flags, mode);
     }
 
-    if (filename && dsp_cloak_enable() && (strcmp(filename, "/dev/dsp") == 0 || strcmp(filename, "/dev/adsp") == 0))
+    if (filename && dsp_cloak_enable() && (pa_streq(filename, "/dev/dsp") || pa_streq(filename, "/dev/adsp") || pa_streq(filename, "/dev/audio")))
         r = dsp_open(flags, &_errno);
-    else if (filename && mixer_cloak_enable() && strcmp(filename, "/dev/mixer") == 0)
+    else if (filename && mixer_cloak_enable() && pa_streq(filename, "/dev/mixer"))
         r = mixer_open(flags, &_errno);
-    else if (filename && sndstat_cloak_enable() && strcmp(filename, "/dev/sndstat") == 0)
+    else if (filename && sndstat_cloak_enable() && pa_streq(filename, "/dev/sndstat"))
         r = sndstat_open(flags, &_errno);
     else {
         function_exit();
@@ -1492,6 +1524,27 @@ int open(const char *filename, int flags, ...) {
     }
 
     return real_open(filename, flags, mode);
+}
+
+static pa_bool_t is_audio_device_node(const char *path) {
+    return
+        pa_streq(path, "/dev/dsp") ||
+        pa_streq(path, "/dev/adsp") ||
+        pa_streq(path, "/dev/audio") ||
+        pa_streq(path, "/dev/sndstat") ||
+        pa_streq(path, "/dev/mixer");
+}
+
+int __open_2(const char *filename, int flags) {
+    debug(DEBUG_LEVEL_VERBOSE, __FILE__": __open_2(%s)\n", filename?filename:"NULL");
+
+    if ((flags & O_CREAT) ||
+        !filename ||
+        !is_audio_device_node(filename)) {
+        LOAD___OPEN_2_FUNC();
+        return ___open_2(filename, flags);
+    }
+    return real_open(filename, flags, 0);
 }
 
 static int mixer_ioctl(fd_info *i, unsigned long request, void*argp, int *_errno) {
@@ -1557,7 +1610,7 @@ static int mixer_ioctl(fd_info *i, unsigned long request, void*argp, int *_errno
 
             *(int*) argp =
                 ((v->values[0]*100/PA_VOLUME_NORM)) |
-                ((v->values[v->channels > 1 ? 1 : 0]*100/PA_VOLUME_NORM)  << 8);
+                ((v->values[v->channels > 1 ? 1 : 0]*100/PA_VOLUME_NORM) << 8);
 
             pa_threaded_mainloop_unlock(i->mainloop);
 
@@ -2038,7 +2091,7 @@ static int dsp_ioctl(fd_info *i, unsigned long request, void*argp, int *_errno) 
         case SNDCTL_DSP_GETCAPS:
             debug(DEBUG_LEVEL_NORMAL, __FILE__": SNDCTL_DSP_CAPS\n");
 
-            *(int*)  argp = DSP_CAP_DUPLEX | DSP_CAP_TRIGGER
+            *(int*) argp = DSP_CAP_DUPLEX | DSP_CAP_TRIGGER
 #ifdef DSP_CAP_MULTI
               | DSP_CAP_MULTI
 #endif
@@ -2302,7 +2355,7 @@ static int dsp_ioctl(fd_info *i, unsigned long request, void*argp, int *_errno) 
             break;
 
         default:
-            /* Mixer ioctls are valid on /dev/dsp aswell */
+            /* Mixer ioctls are valid on /dev/dsp as well */
             return mixer_ioctl(i, request, argp, _errno);
 
 inval:
@@ -2388,10 +2441,7 @@ int access(const char *pathname, int mode) {
     debug(DEBUG_LEVEL_VERBOSE, __FILE__": access(%s)\n", pathname?pathname:"NULL");
 
     if (!pathname ||
-        (strcmp(pathname, "/dev/dsp") != 0 &&
-         strcmp(pathname, "/dev/adsp") != 0 &&
-         strcmp(pathname, "/dev/sndstat") != 0 &&
-         strcmp(pathname, "/dev/mixer") != 0 )) {
+        !is_audio_device_node(pathname)) {
         LOAD_ACCESS_FUNC();
         return _access(pathname, mode);
     }
@@ -2417,10 +2467,7 @@ int stat(const char *pathname, struct stat *buf) {
 
     if (!pathname ||
         !buf ||
-        ( strcmp(pathname, "/dev/dsp") != 0 &&
-          strcmp(pathname, "/dev/adsp") != 0 &&
-          strcmp(pathname, "/dev/sndstat") != 0 &&
-          strcmp(pathname, "/dev/mixer") != 0 )) {
+        !is_audio_device_node(pathname)) {
         debug(DEBUG_LEVEL_VERBOSE, __FILE__": stat(%s)\n", pathname?pathname:"NULL");
         LOAD_STAT_FUNC();
         return _stat(pathname, buf);
@@ -2474,10 +2521,7 @@ int stat64(const char *pathname, struct stat64 *buf) {
 
     if (!pathname ||
         !buf ||
-        ( strcmp(pathname, "/dev/dsp") != 0 &&
-          strcmp(pathname, "/dev/adsp") != 0 &&
-          strcmp(pathname, "/dev/sndstat") != 0 &&
-          strcmp(pathname, "/dev/mixer") != 0 )) {
+        !is_audio_device_node(pathname)) {
         LOAD_STAT64_FUNC();
         return _stat64(pathname, buf);
     }
@@ -2519,15 +2563,25 @@ int open64(const char *filename, int flags, ...) {
     }
 
     if (!filename ||
-        ( strcmp(filename, "/dev/dsp") != 0 &&
-          strcmp(filename, "/dev/adsp") != 0 &&
-          strcmp(filename, "/dev/sndstat") != 0 &&
-          strcmp(filename, "/dev/mixer") != 0 )) {
+        !is_audio_device_node(filename)) {
         LOAD_OPEN64_FUNC();
         return _open64(filename, flags, mode);
     }
 
     return real_open(filename, flags, mode);
+}
+
+int __open64_2(const char *filename, int flags) {
+    debug(DEBUG_LEVEL_VERBOSE, __FILE__": __open64_2(%s)\n", filename?filename:"NULL");
+
+    if ((flags & O_CREAT) ||
+        !filename ||
+        !is_audio_device_node(filename)) {
+        LOAD___OPEN64_2_FUNC();
+        return ___open64_2(filename, flags);
+    }
+
+    return real_open(filename, flags, 0);
 }
 
 #endif
@@ -2539,10 +2593,7 @@ int __xstat(int ver, const char *pathname, struct stat *buf) {
 
     if (!pathname ||
         !buf ||
-        ( strcmp(pathname, "/dev/dsp") != 0 &&
-          strcmp(pathname, "/dev/adsp") != 0 &&
-          strcmp(pathname, "/dev/sndstat") != 0 &&
-          strcmp(pathname, "/dev/mixer") != 0 )) {
+        !is_audio_device_node(pathname)) {
         LOAD_XSTAT_FUNC();
         return ___xstat(ver, pathname, buf);
     }
@@ -2562,10 +2613,7 @@ int __xstat64(int ver, const char *pathname, struct stat64 *buf) {
 
     if (!pathname ||
         !buf ||
-        ( strcmp(pathname, "/dev/dsp") != 0 &&
-          strcmp(pathname, "/dev/adsp") != 0 &&
-          strcmp(pathname, "/dev/sndstat") != 0 &&
-          strcmp(pathname, "/dev/mixer") != 0 )) {
+        !is_audio_device_node(pathname)) {
         LOAD_XSTAT64_FUNC();
         return ___xstat64(ver, pathname, buf);
     }
@@ -2591,10 +2639,7 @@ FILE* fopen(const char *filename, const char *mode) {
 
     if (!filename ||
         !mode ||
-        ( strcmp(filename, "/dev/dsp") != 0 &&
-          strcmp(filename, "/dev/adsp") != 0 &&
-          strcmp(filename, "/dev/sndstat") != 0 &&
-          strcmp(filename, "/dev/mixer") != 0 )) {
+        !is_audio_device_node(filename)) {
         LOAD_FOPEN_FUNC();
         return _fopen(filename, mode);
     }
@@ -2634,10 +2679,7 @@ FILE *fopen64(const char *filename, const char *mode) {
 
     if (!filename ||
         !mode ||
-        ( strcmp(filename, "/dev/dsp") != 0 &&
-          strcmp(filename, "/dev/adsp") != 0 &&
-          strcmp(filename, "/dev/sndstat") != 0 &&
-          strcmp(filename, "/dev/mixer") != 0 )) {
+        !is_audio_device_node(filename)) {
         LOAD_FOPEN64_FUNC();
         return _fopen64(filename, mode);
     }

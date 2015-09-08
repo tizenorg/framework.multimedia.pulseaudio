@@ -25,34 +25,27 @@
 #endif
 
 #include <stdio.h>
-#include <signal.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <string.h>
 #include <fcntl.h>
 #include <errno.h>
-
-#ifdef HAVE_POLL_H
-#include <poll.h>
-#else
-#include <pulsecore/poll.h>
-#endif
 
 #ifndef HAVE_PIPE
 #include <pulsecore/pipe.h>
 #endif
 
-#include <pulse/i18n.h>
 #include <pulse/rtclock.h>
 #include <pulse/timeval.h>
 #include <pulse/xmalloc.h>
 
+#include <pulsecore/poll.h>
 #include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/llist.h>
 #include <pulsecore/log.h>
 #include <pulsecore/core-error.h>
-#include <pulsecore/winsock.h>
+#include <pulsecore/socket.h>
 #include <pulsecore/macro.h>
 
 #include "mainloop.h"
@@ -121,7 +114,7 @@ struct pa_mainloop {
     int retval;
     pa_bool_t quit:1;
 
-    pa_bool_t wakeup_requested:1;
+    pa_atomic_t wakeup_requested;
     int wakeup_pipe[2];
     int wakeup_pipe_type;
 
@@ -156,7 +149,7 @@ static pa_io_event_flags_t map_flags_from_libc(short flags) {
 
 /* IO events */
 static pa_io_event* mainloop_io_new(
-        pa_mainloop_api*a,
+        pa_mainloop_api *a,
         int fd,
         pa_io_event_flags_t events,
         pa_io_event_cb_t callback,
@@ -181,26 +174,6 @@ static pa_io_event* mainloop_io_new(
 
     e->callback = callback;
     e->userdata = userdata;
-
-#ifdef OS_IS_WIN32
-    {
-        fd_set xset;
-        struct timeval tv;
-
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-
-        FD_ZERO (&xset);
-        FD_SET (fd, &xset);
-
-        if ((select((SELECT_TYPE_ARG1) fd, NULL, NULL, SELECT_TYPE_ARG234 &xset,
-                    SELECT_TYPE_ARG5 &tv) == -1) &&
-             (WSAGetLastError() == WSAENOTSOCK)) {
-            pa_log_warn("Cannot monitor non-socket file descriptors.");
-            e->dead = TRUE;
-        }
-    }
-#endif
 
     PA_LLIST_PREPEND(pa_io_event, m->io_events, e);
     m->rebuild_pollfds = TRUE;
@@ -249,7 +222,7 @@ static void mainloop_io_set_destroy(pa_io_event *e, pa_io_event_destroy_cb_t cal
 
 /* Defer events */
 static pa_defer_event* mainloop_defer_new(
-        pa_mainloop_api*a,
+        pa_mainloop_api *a,
         pa_defer_event_cb_t callback,
         void *userdata) {
 
@@ -336,7 +309,7 @@ static pa_usec_t make_rt(const struct timeval *tv, pa_bool_t *use_rtclock) {
 }
 
 static pa_time_event* mainloop_time_new(
-        pa_mainloop_api*a,
+        pa_mainloop_api *a,
         const struct timeval *tv,
         pa_time_event_cb_t callback,
         void *userdata) {
@@ -360,7 +333,7 @@ static pa_time_event* mainloop_time_new(
 
     if ((e->enabled = (t != PA_USEC_INVALID))) {
         e->time = t;
-        e->use_rtclock= use_rtclock;
+        e->use_rtclock = use_rtclock;
 
         m->n_enabled_time_events++;
 
@@ -443,7 +416,7 @@ static void mainloop_time_set_destroy(pa_time_event *e, pa_time_event_destroy_cb
 
 /* quit() */
 
-static void mainloop_quit(pa_mainloop_api*a, int retval) {
+static void mainloop_quit(pa_mainloop_api *a, int retval) {
     pa_mainloop *m;
 
     pa_assert(a);
@@ -482,7 +455,7 @@ pa_mainloop *pa_mainloop_new(void) {
 
     m = pa_xnew0(pa_mainloop, 1);
 
-    if (pipe(m->wakeup_pipe) < 0) {
+    if (pa_pipe_cloexec(m->wakeup_pipe) < 0) {
         pa_log_error("ERROR: cannot create wakeup pipe");
         pa_xfree(m);
         return NULL;
@@ -490,8 +463,6 @@ pa_mainloop *pa_mainloop_new(void) {
 
     pa_make_fd_nonblock(m->wakeup_pipe[0]);
     pa_make_fd_nonblock(m->wakeup_pipe[1]);
-    pa_make_fd_cloexec(m->wakeup_pipe[0]);
-    pa_make_fd_cloexec(m->wakeup_pipe[1]);
 
     m->rebuild_pollfds = TRUE;
 
@@ -598,7 +569,7 @@ static void cleanup_defer_events(pa_mainloop *m, pa_bool_t force) {
 }
 
 
-void pa_mainloop_free(pa_mainloop* m) {
+void pa_mainloop_free(pa_mainloop *m) {
     pa_assert(m);
 
     cleanup_io_events(m, TRUE);
@@ -640,13 +611,11 @@ static void rebuild_pollfds(pa_mainloop *m) {
     m->n_pollfds = 0;
     p = m->pollfds;
 
-    if (m->wakeup_pipe[0] >= 0) {
-        m->pollfds[0].fd = m->wakeup_pipe[0];
-        m->pollfds[0].events = POLLIN;
-        m->pollfds[0].revents = 0;
-        p++;
-        m->n_pollfds++;
-    }
+    m->pollfds[0].fd = m->wakeup_pipe[0];
+    m->pollfds[0].events = POLLIN;
+    m->pollfds[0].revents = 0;
+    p++;
+    m->n_pollfds++;
 
     PA_LLIST_FOREACH(e, m->io_events) {
         if (e->dead) {
@@ -801,10 +770,11 @@ void pa_mainloop_wakeup(pa_mainloop *m) {
     char c = 'W';
     pa_assert(m);
 
-    if (m->wakeup_pipe[1] >= 0 && m->state == STATE_POLLING) {
-        pa_write(m->wakeup_pipe[1], &c, sizeof(c), &m->wakeup_pipe_type);
-        m->wakeup_requested++;
-    }
+    if (pa_write(m->wakeup_pipe[1], &c, sizeof(c), &m->wakeup_pipe_type) < 0)
+        /* Not much options for recovering from the error. Let's at least log something. */
+        pa_log("pa_write() failed while trying to wake up the mainloop: %s", pa_cstrerror(errno));
+
+    pa_atomic_store(&m->wakeup_requested, TRUE);
 }
 
 static void clear_wakeup(pa_mainloop *m) {
@@ -812,13 +782,9 @@ static void clear_wakeup(pa_mainloop *m) {
 
     pa_assert(m);
 
-    if (m->wakeup_pipe[0] < 0)
-        return;
-
-    if (m->wakeup_requested) {
+    if (pa_atomic_cmpxchg(&m->wakeup_requested, TRUE, FALSE)) {
         while (pa_read(m->wakeup_pipe[0], &c, sizeof(c), &m->wakeup_pipe_type) == sizeof(c))
             ;
-        m->wakeup_requested = 0;
     }
 }
 
@@ -855,10 +821,15 @@ quit:
 }
 
 static int usec_to_timeout(pa_usec_t u) {
+    int timeout;
+
     if (u == PA_USEC_INVALID)
         return -1;
 
-    return (u + PA_USEC_PER_MSEC - 1) / PA_USEC_PER_MSEC;
+    timeout = (u + PA_USEC_PER_MSEC - 1) / PA_USEC_PER_MSEC;
+    pa_assert(timeout >= 0);
+
+    return timeout;
 }
 
 int pa_mainloop_poll(pa_mainloop *m) {
@@ -889,7 +860,7 @@ int pa_mainloop_poll(pa_mainloop *m) {
                     m->prepared_timeout == PA_USEC_INVALID ? NULL : pa_timespec_store(&ts, m->prepared_timeout),
                     NULL);
 #else
-            m->poll_func_ret = poll(
+            m->poll_func_ret = pa_poll(
                     m->pollfds, m->n_pollfds,
                     usec_to_timeout(m->prepared_timeout));
 #endif
@@ -995,7 +966,7 @@ void pa_mainloop_quit(pa_mainloop *m, int retval) {
     pa_mainloop_wakeup(m);
 }
 
-pa_mainloop_api* pa_mainloop_get_api(pa_mainloop*m) {
+pa_mainloop_api* pa_mainloop_get_api(pa_mainloop *m) {
     pa_assert(m);
 
     return &m->api;
@@ -1008,7 +979,7 @@ void pa_mainloop_set_poll_func(pa_mainloop *m, pa_poll_func poll_func, void *use
     m->poll_func_userdata = userdata;
 }
 
-pa_bool_t pa_mainloop_is_our_api(pa_mainloop_api*m) {
+pa_bool_t pa_mainloop_is_our_api(pa_mainloop_api *m) {
     pa_assert(m);
 
     return m->io_new == mainloop_io_new;

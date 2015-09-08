@@ -32,15 +32,19 @@
 #include <pulse/timeval.h>
 #include <pulse/rtclock.h>
 #include <pulse/xmalloc.h>
+#include <pulse/fork-detect.h>
 
 #include <pulsecore/pstream-util.h>
 #include <pulsecore/log.h>
 #include <pulsecore/hashmap.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/core-rtclock.h>
+#include <pulsecore/core-util.h>
 
-#include "fork-detect.h"
 #include "internal.h"
+#include "stream.h"
+
+/* #define STREAM_DEBUG */
 
 #define AUTO_TIMING_INTERVAL_START_USEC (10*PA_USEC_PER_MSEC)
 #define AUTO_TIMING_INTERVAL_END_USEC (1500*PA_USEC_PER_MSEC)
@@ -78,30 +82,25 @@ static void reset_callbacks(pa_stream *s) {
     s->buffer_attr_userdata = NULL;
 }
 
-pa_stream *pa_stream_new_with_proplist(
+static pa_stream *pa_stream_new_with_proplist_internal(
         pa_context *c,
         const char *name,
         const pa_sample_spec *ss,
         const pa_channel_map *map,
+        pa_format_info * const *formats,
+        unsigned int n_formats,
         pa_proplist *p) {
 
     pa_stream *s;
-    int i;
-    pa_channel_map tmap;
+    unsigned int i;
 
     pa_assert(c);
     pa_assert(PA_REFCNT_VALUE(c) >= 1);
+    pa_assert((ss == NULL && map == NULL) || (formats == NULL && n_formats == 0));
+    pa_assert(n_formats < PA_MAX_FORMATS);
 
     PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
-    PA_CHECK_VALIDITY_RETURN_NULL(c, ss && pa_sample_spec_valid(ss), PA_ERR_INVALID);
-    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 12 || (ss->format != PA_SAMPLE_S32LE && ss->format != PA_SAMPLE_S32BE), PA_ERR_NOTSUPPORTED);
-    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 15 || (ss->format != PA_SAMPLE_S24LE && ss->format != PA_SAMPLE_S24BE), PA_ERR_NOTSUPPORTED);
-    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 15 || (ss->format != PA_SAMPLE_S24_32LE && ss->format != PA_SAMPLE_S24_32BE), PA_ERR_NOTSUPPORTED);
-    PA_CHECK_VALIDITY_RETURN_NULL(c, !map || (pa_channel_map_valid(map) && map->channels == ss->channels), PA_ERR_INVALID);
     PA_CHECK_VALIDITY_RETURN_NULL(c, name || (p && pa_proplist_contains(p, PA_PROP_MEDIA_NAME)), PA_ERR_INVALID);
-
-    if (!map)
-        PA_CHECK_VALIDITY_RETURN_NULL(c, map = pa_channel_map_init_auto(&tmap, ss->channels, PA_CHANNEL_MAP_DEFAULT), PA_ERR_INVALID);
 
     s = pa_xnew(pa_stream, 1);
     PA_REFCNT_INIT(s);
@@ -112,8 +111,25 @@ pa_stream *pa_stream_new_with_proplist(
     s->state = PA_STREAM_UNCONNECTED;
     s->flags = 0;
 
-    s->sample_spec = *ss;
-    s->channel_map = *map;
+    if (ss)
+        s->sample_spec = *ss;
+    else
+        pa_sample_spec_init(&s->sample_spec);
+
+    if (map)
+        s->channel_map = *map;
+    else
+        pa_channel_map_init(&s->channel_map);
+
+    s->n_formats = 0;
+    if (formats) {
+        s->n_formats = n_formats;
+        for (i = 0; i < n_formats; i++)
+            s->req_formats[i] = pa_format_info_copy(formats[i]);
+    }
+
+    /* We'll get the final negotiated format after connecting */
+    s->format = NULL;
 
     s->direct_on_input = PA_INVALID_INDEX;
 
@@ -129,12 +145,23 @@ pa_stream *pa_stream_new_with_proplist(
     s->requested_bytes = 0;
     memset(&s->buffer_attr, 0, sizeof(s->buffer_attr));
 
-    /* We initialize der target length here, so that if the user
+    /* We initialize the target length here, so that if the user
      * passes no explicit buffering metrics the default is similar to
      * what older PA versions provided. */
 
     s->buffer_attr.maxlength = (uint32_t) -1;
-    s->buffer_attr.tlength = (uint32_t) pa_usec_to_bytes(250*PA_USEC_PER_MSEC, ss); /* 250ms of buffering */
+    if (ss)
+        s->buffer_attr.tlength = (uint32_t) pa_usec_to_bytes(250*PA_USEC_PER_MSEC, ss); /* 250ms of buffering */
+    else {
+        /* FIXME: We assume a worst-case compressed format corresponding to
+         * 48000 Hz, 2 ch, S16 PCM, but this can very well be incorrect */
+        pa_sample_spec tmp_ss = {
+            .format   = PA_SAMPLE_S16NE,
+            .rate     = 48000,
+            .channels = 2,
+        };
+        s->buffer_attr.tlength = (uint32_t) pa_usec_to_bytes(250*PA_USEC_PER_MSEC, &tmp_ss); /* 250ms of buffering */
+    }
     s->buffer_attr.minreq = (uint32_t) -1;
     s->buffer_attr.prebuf = (uint32_t) -1;
     s->buffer_attr.fragsize = (uint32_t) -1;
@@ -155,6 +182,7 @@ pa_stream *pa_stream_new_with_proplist(
     s->timing_info_valid = FALSE;
 
     s->previous_time = 0;
+    s->latest_underrun_at_index = -1;
 
     s->read_index_not_before = 0;
     s->write_index_not_before = 0;
@@ -177,6 +205,39 @@ pa_stream *pa_stream_new_with_proplist(
     return s;
 }
 
+pa_stream *pa_stream_new_with_proplist(
+        pa_context *c,
+        const char *name,
+        const pa_sample_spec *ss,
+        const pa_channel_map *map,
+        pa_proplist *p) {
+
+    pa_channel_map tmap;
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, ss && pa_sample_spec_valid(ss), PA_ERR_INVALID);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 12 || (ss->format != PA_SAMPLE_S32LE && ss->format != PA_SAMPLE_S32BE), PA_ERR_NOTSUPPORTED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 15 || (ss->format != PA_SAMPLE_S24LE && ss->format != PA_SAMPLE_S24BE), PA_ERR_NOTSUPPORTED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 15 || (ss->format != PA_SAMPLE_S24_32LE && ss->format != PA_SAMPLE_S24_32BE), PA_ERR_NOTSUPPORTED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !map || (pa_channel_map_valid(map) && map->channels == ss->channels), PA_ERR_INVALID);
+
+    if (!map)
+        PA_CHECK_VALIDITY_RETURN_NULL(c, map = pa_channel_map_init_auto(&tmap, ss->channels, PA_CHANNEL_MAP_DEFAULT), PA_ERR_INVALID);
+
+    return pa_stream_new_with_proplist_internal(c, name, ss, map, NULL, 0, p);
+}
+
+pa_stream *pa_stream_new_extended(
+        pa_context *c,
+        const char *name,
+        pa_format_info * const *formats,
+        unsigned int n_formats,
+        pa_proplist *p) {
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 21, PA_ERR_NOTSUPPORTED);
+
+    return pa_stream_new_with_proplist_internal(c, name, NULL, NULL, formats, n_formats, p);
+}
+
 static void stream_unlink(pa_stream *s) {
     pa_operation *o, *n;
     pa_assert(s);
@@ -186,7 +247,7 @@ static void stream_unlink(pa_stream *s) {
 
     /* Detach from context */
 
-    /* Unref all operatio object that point to us */
+    /* Unref all operation objects that point to us */
     for (o = s->context->operations; o; o = n) {
         n = o->next;
 
@@ -199,7 +260,7 @@ static void stream_unlink(pa_stream *s) {
         pa_pdispatch_unregister_reply(s->context->pdispatch, s);
 
     if (s->channel_valid) {
-        pa_dynarray_put((s->direction == PA_STREAM_PLAYBACK) ? s->context->playback_streams : s->context->record_streams, s->channel, NULL);
+        pa_hashmap_remove((s->direction == PA_STREAM_RECORD) ? s->context->record_streams : s->context->playback_streams, PA_UINT32_TO_PTR(s->channel));
         s->channel = 0;
         s->channel_valid = FALSE;
     }
@@ -218,13 +279,16 @@ static void stream_unlink(pa_stream *s) {
 }
 
 static void stream_free(pa_stream *s) {
+    unsigned int i;
+
     pa_assert(s);
 
     stream_unlink(s);
 
     if (s->write_memblock) {
-        pa_memblock_release(s->write_memblock);
-        pa_memblock_unref(s->write_data);
+        if (s->write_data)
+            pa_memblock_release(s->write_memblock);
+        pa_memblock_unref(s->write_memblock);
     }
 
     if (s->peek_memchunk.memblock) {
@@ -241,6 +305,12 @@ static void stream_free(pa_stream *s) {
 
     if (s->smoother)
         pa_smoother_free(s->smoother);
+
+    for (i = 0; i < s->n_formats; i++)
+        pa_format_info_free(s->req_formats[i]);
+
+    if (s->format)
+        pa_format_info_free(s->format);
 
     pa_xfree(s->device_name);
     pa_xfree(s);
@@ -317,7 +387,9 @@ static void request_auto_timing_update(pa_stream *s, pa_bool_t force) {
         (force || !s->auto_timing_update_requested)) {
         pa_operation *o;
 
-/*         pa_log("Automatically requesting new timing data"); */
+#ifdef STREAM_DEBUG
+        pa_log_debug("Automatically requesting new timing data");
+#endif
 
         if ((o = pa_stream_update_timing_info(s, NULL, NULL))) {
             pa_operation_unref(o);
@@ -326,12 +398,18 @@ static void request_auto_timing_update(pa_stream *s, pa_bool_t force) {
     }
 
     if (s->auto_timing_update_event) {
-        if (force)
-            s->auto_timing_interval_usec = AUTO_TIMING_INTERVAL_START_USEC;
+        if (s->suspended && !force) {
+            pa_assert(s->mainloop);
+            s->mainloop->time_free(s->auto_timing_update_event);
+            s->auto_timing_update_event = NULL;
+        } else {
+            if (force)
+                s->auto_timing_interval_usec = AUTO_TIMING_INTERVAL_START_USEC;
 
-        pa_context_rttime_restart(s->context, s->auto_timing_update_event, pa_rtclock_now() + s->auto_timing_interval_usec);
+            pa_context_rttime_restart(s->context, s->auto_timing_update_event, pa_rtclock_now() + s->auto_timing_interval_usec);
 
-        s->auto_timing_interval_usec = PA_MIN(AUTO_TIMING_INTERVAL_END_USEC, s->auto_timing_interval_usec*2);
+            s->auto_timing_interval_usec = PA_MIN(AUTO_TIMING_INTERVAL_END_USEC, s->auto_timing_interval_usec*2);
+        }
     }
 }
 
@@ -354,7 +432,7 @@ void pa_command_stream_killed(pa_pdispatch *pd, uint32_t command, uint32_t tag, 
         goto finish;
     }
 
-    if (!(s = pa_dynarray_get(command == PA_COMMAND_PLAYBACK_STREAM_KILLED ? c->playback_streams : c->record_streams, channel)))
+    if (!(s = pa_hashmap_get(command == PA_COMMAND_PLAYBACK_STREAM_KILLED ? c->playback_streams : c->record_streams, PA_UINT32_TO_PTR(channel))))
         goto finish;
 
     if (s->state != PA_STREAM_READY)
@@ -399,7 +477,7 @@ static void check_smoother_status(pa_stream *s, pa_bool_t aposteriori, pa_bool_t
              * indications when audio really starts/stops playing, if
              * we don't have any timing info yet -- instead of trying
              * to be smart and guessing the server time. Otherwise the
-             * unknown transport delay add too much noise to our time
+             * unknown transport delay adds too much noise to our time
              * calculations. */
 
             return;
@@ -411,6 +489,8 @@ static void check_smoother_status(pa_stream *s, pa_bool_t aposteriori, pa_bool_t
     /* Please note that we have no idea if playback actually started
      * if prebuf is non-zero! */
 }
+
+static void auto_timing_update_callback(pa_mainloop_api *m, pa_time_event *e, const struct timeval *t, void *userdata);
 
 void pa_command_stream_moved(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_tagstruct *t, void *userdata) {
     pa_context *c = userdata;
@@ -474,7 +554,7 @@ void pa_command_stream_moved(pa_pdispatch *pd, uint32_t command, uint32_t tag, p
         goto finish;
     }
 
-    if (!(s = pa_dynarray_get(command == PA_COMMAND_PLAYBACK_STREAM_MOVED ? c->playback_streams : c->record_streams, channel)))
+    if (!(s = pa_hashmap_get(command == PA_COMMAND_PLAYBACK_STREAM_MOVED ? c->playback_streams : c->record_streams, PA_UINT32_TO_PTR(channel))))
         goto finish;
 
     if (s->state != PA_STREAM_READY)
@@ -498,6 +578,12 @@ void pa_command_stream_moved(pa_pdispatch *pd, uint32_t command, uint32_t tag, p
     s->device_index = di;
 
     s->suspended = suspended;
+
+    if ((s->flags & PA_STREAM_AUTO_TIMING_UPDATE) && !suspended && !s->auto_timing_update_event) {
+        s->auto_timing_interval_usec = AUTO_TIMING_INTERVAL_START_USEC;
+        s->auto_timing_update_event = pa_context_rttime_new(s->context, pa_rtclock_now() + s->auto_timing_interval_usec, &auto_timing_update_callback, s);
+        request_auto_timing_update(s, TRUE);
+    }
 
     check_smoother_status(s, TRUE, FALSE, FALSE);
     request_auto_timing_update(s, TRUE);
@@ -557,7 +643,7 @@ void pa_command_stream_buffer_attr(pa_pdispatch *pd, uint32_t command, uint32_t 
         goto finish;
     }
 
-    if (!(s = pa_dynarray_get(command == PA_COMMAND_PLAYBACK_BUFFER_ATTR_CHANGED ? c->playback_streams : c->record_streams, channel)))
+    if (!(s = pa_hashmap_get(command == PA_COMMAND_PLAYBACK_BUFFER_ATTR_CHANGED ? c->playback_streams : c->record_streams, PA_UINT32_TO_PTR(channel))))
         goto finish;
 
     if (s->state != PA_STREAM_READY)
@@ -609,13 +695,19 @@ void pa_command_stream_suspended(pa_pdispatch *pd, uint32_t command, uint32_t ta
         goto finish;
     }
 
-    if (!(s = pa_dynarray_get(command == PA_COMMAND_PLAYBACK_STREAM_SUSPENDED ? c->playback_streams : c->record_streams, channel)))
+    if (!(s = pa_hashmap_get(command == PA_COMMAND_PLAYBACK_STREAM_SUSPENDED ? c->playback_streams : c->record_streams, PA_UINT32_TO_PTR(channel))))
         goto finish;
 
     if (s->state != PA_STREAM_READY)
         goto finish;
 
     s->suspended = suspended;
+
+    if ((s->flags & PA_STREAM_AUTO_TIMING_UPDATE) && !suspended && !s->auto_timing_update_event) {
+        s->auto_timing_interval_usec = AUTO_TIMING_INTERVAL_START_USEC;
+        s->auto_timing_update_event = pa_context_rttime_new(s->context, pa_rtclock_now() + s->auto_timing_interval_usec, &auto_timing_update_callback, s);
+        request_auto_timing_update(s, TRUE);
+    }
 
     check_smoother_status(s, TRUE, FALSE, FALSE);
     request_auto_timing_update(s, TRUE);
@@ -651,7 +743,7 @@ void pa_command_stream_started(pa_pdispatch *pd, uint32_t command, uint32_t tag,
         goto finish;
     }
 
-    if (!(s = pa_dynarray_get(c->playback_streams, channel)))
+    if (!(s = pa_hashmap_get(c->playback_streams, PA_UINT32_TO_PTR(channel))))
         goto finish;
 
     if (s->state != PA_STREAM_READY)
@@ -697,11 +789,18 @@ void pa_command_stream_event(pa_pdispatch *pd, uint32_t command, uint32_t tag, p
         goto finish;
     }
 
-    if (!(s = pa_dynarray_get(command == PA_COMMAND_PLAYBACK_STREAM_EVENT ? c->playback_streams : c->record_streams, channel)))
+    if (!(s = pa_hashmap_get(command == PA_COMMAND_PLAYBACK_STREAM_EVENT ? c->playback_streams : c->record_streams, PA_UINT32_TO_PTR(channel))))
         goto finish;
 
     if (s->state != PA_STREAM_READY)
         goto finish;
+
+    if (pa_streq(event, PA_STREAM_EVENT_FORMAT_LOST)) {
+        /* Let client know what the running time was when the stream had to be killed  */
+        pa_usec_t stream_time;
+        if (pa_stream_get_time(s, &stream_time) == 0)
+            pa_proplist_setf(pl, "stream-time", "%llu", (unsigned long long) stream_time);
+    }
 
     if (s->event_callback)
         s->event_callback(s, event, pl, s->event_userdata);
@@ -733,13 +832,17 @@ void pa_command_request(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_tag
         goto finish;
     }
 
-    if (!(s = pa_dynarray_get(c->playback_streams, channel)))
+    if (!(s = pa_hashmap_get(c->playback_streams, PA_UINT32_TO_PTR(channel))))
         goto finish;
 
     if (s->state != PA_STREAM_READY)
         goto finish;
 
     s->requested_bytes += bytes;
+
+#ifdef STREAM_DEBUG
+    pa_log_debug("got request for %lli, now at %lli", (long long) bytes, (long long) s->requested_bytes);
+#endif
 
     if (s->requested_bytes > 0 && s->write_callback)
         s->write_callback(s, (size_t) s->requested_bytes, s->write_userdata);
@@ -748,10 +851,17 @@ finish:
     pa_context_unref(c);
 }
 
+int64_t pa_stream_get_underflow_index(pa_stream *p)
+{
+    pa_assert(p);
+    return p->latest_underrun_at_index;
+}
+
 void pa_command_overflow_or_underflow(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_tagstruct *t, void *userdata) {
     pa_stream *s;
     pa_context *c = userdata;
     uint32_t channel;
+    int64_t offset = -1;
 
     pa_assert(pd);
     pa_assert(command == PA_COMMAND_OVERFLOW || command == PA_COMMAND_UNDERFLOW);
@@ -761,17 +871,31 @@ void pa_command_overflow_or_underflow(pa_pdispatch *pd, uint32_t command, uint32
 
     pa_context_ref(c);
 
-    if (pa_tagstruct_getu32(t, &channel) < 0 ||
-        !pa_tagstruct_eof(t)) {
+    if (pa_tagstruct_getu32(t, &channel) < 0) {
         pa_context_fail(c, PA_ERR_PROTOCOL);
         goto finish;
     }
 
-    if (!(s = pa_dynarray_get(c->playback_streams, channel)))
+    if (c->version >= 23 && command == PA_COMMAND_UNDERFLOW) {
+        if (pa_tagstruct_gets64(t, &offset) < 0) {
+            pa_context_fail(c, PA_ERR_PROTOCOL);
+            goto finish;
+        }
+    }
+
+    if (!pa_tagstruct_eof(t)) {
+        pa_context_fail(c, PA_ERR_PROTOCOL);
+        goto finish;
+    }
+
+    if (!(s = pa_hashmap_get(c->playback_streams, PA_UINT32_TO_PTR(channel))))
         goto finish;
 
     if (s->state != PA_STREAM_READY)
         goto finish;
+
+    if (offset != -1)
+        s->latest_underrun_at_index = offset;
 
     if (s->buffer_attr.prebuf > 0)
         check_smoother_status(s, TRUE, FALSE, TRUE);
@@ -786,7 +910,7 @@ void pa_command_overflow_or_underflow(pa_pdispatch *pd, uint32_t command, uint32
             s->underflow_callback(s, s->underflow_userdata);
     }
 
- finish:
+finish:
     pa_context_unref(c);
 }
 
@@ -794,7 +918,9 @@ static void invalidate_indexes(pa_stream *s, pa_bool_t r, pa_bool_t w) {
     pa_assert(s);
     pa_assert(PA_REFCNT_VALUE(s) >= 1);
 
-/*     pa_log("invalidate r:%u w:%u tag:%u", r, w, s->context->ctag); */
+#ifdef STREAM_DEBUG
+    pa_log_debug("invalidate r:%u w:%u tag:%u", r, w, s->context->ctag);
+#endif
 
     if (s->state != PA_STREAM_READY)
         return;
@@ -805,7 +931,9 @@ static void invalidate_indexes(pa_stream *s, pa_bool_t r, pa_bool_t w) {
         if (s->timing_info_valid)
             s->timing_info.write_index_corrupt = TRUE;
 
-/*         pa_log("write_index invalidated"); */
+#ifdef STREAM_DEBUG
+        pa_log_debug("write_index invalidated");
+#endif
     }
 
     if (r) {
@@ -814,7 +942,9 @@ static void invalidate_indexes(pa_stream *s, pa_bool_t r, pa_bool_t w) {
         if (s->timing_info_valid)
             s->timing_info.read_index_corrupt = TRUE;
 
-/*         pa_log("read_index invalidated"); */
+#ifdef STREAM_DEBUG
+        pa_log_debug("read_index invalidated");
+#endif
     }
 
     request_auto_timing_update(s, TRUE);
@@ -852,10 +982,28 @@ static void create_stream_complete(pa_stream *s) {
     check_smoother_status(s, TRUE, FALSE, FALSE);
 }
 
-static void automatic_buffer_attr(pa_stream *s, pa_buffer_attr *attr, const pa_sample_spec *ss) {
+static void patch_buffer_attr(pa_stream *s, pa_buffer_attr *attr, pa_stream_flags_t *flags) {
+    const char *e;
+
     pa_assert(s);
     pa_assert(attr);
-    pa_assert(ss);
+
+    if ((e = getenv("PULSE_LATENCY_MSEC"))) {
+        uint32_t ms;
+
+        if (pa_atou(e, &ms) < 0 || ms <= 0)
+            pa_log_debug("Failed to parse $PULSE_LATENCY_MSEC: %s", e);
+        else {
+            attr->maxlength = (uint32_t) -1;
+            attr->tlength = pa_usec_to_bytes(ms * PA_USEC_PER_MSEC, &s->sample_spec);
+            attr->minreq = (uint32_t) -1;
+            attr->prebuf = (uint32_t) -1;
+            attr->fragsize = attr->tlength;
+        }
+
+        if (flags)
+            *flags |= PA_STREAM_ADJUST_LATENCY;
+    }
 
     if (s->context->version >= 13)
         return;
@@ -870,7 +1018,7 @@ static void automatic_buffer_attr(pa_stream *s, pa_buffer_attr *attr, const pa_s
         attr->maxlength = 4*1024*1024; /* 4MB is the maximum queue length PulseAudio <= 0.9.9 supported. */
 
     if (attr->tlength == (uint32_t) -1)
-        attr->tlength = (uint32_t) pa_usec_to_bytes(250*PA_USEC_PER_MSEC, ss); /* 250ms of buffering */
+        attr->tlength = (uint32_t) pa_usec_to_bytes(250*PA_USEC_PER_MSEC, &s->sample_spec); /* 250ms of buffering */
 
     if (attr->minreq == (uint32_t) -1)
         attr->minreq = (attr->tlength)/5; /* Ask for more data when there are only 200ms left in the playback buffer */
@@ -903,7 +1051,7 @@ void pa_create_stream_callback(pa_pdispatch *pd, uint32_t command, uint32_t tag,
 
     if (pa_tagstruct_getu32(t, &s->channel) < 0 ||
         s->channel == PA_INVALID_INDEX ||
-        ((s->direction != PA_STREAM_UPLOAD) && (pa_tagstruct_getu32(t, &s->stream_index) < 0 ||  s->stream_index == PA_INVALID_INDEX)) ||
+        ((s->direction != PA_STREAM_UPLOAD) && (pa_tagstruct_getu32(t, &s->stream_index) < 0 || s->stream_index == PA_INVALID_INDEX)) ||
         ((s->direction != PA_STREAM_RECORD) && pa_tagstruct_getu32(t, &requested_bytes) < 0)) {
         pa_context_fail(s->context, PA_ERR_PROTOCOL);
         goto finish;
@@ -948,9 +1096,10 @@ void pa_create_stream_callback(pa_pdispatch *pd, uint32_t command, uint32_t tag,
             ss.channels != cm.channels ||
             !pa_channel_map_valid(&cm) ||
             !pa_sample_spec_valid(&ss) ||
-            (!(s->flags & PA_STREAM_FIX_FORMAT) && ss.format != s->sample_spec.format) ||
-            (!(s->flags & PA_STREAM_FIX_RATE) && ss.rate != s->sample_spec.rate) ||
-            (!(s->flags & PA_STREAM_FIX_CHANNELS) && !pa_channel_map_equal(&cm, &s->channel_map))) {
+            (s->n_formats == 0 && (
+                (!(s->flags & PA_STREAM_FIX_FORMAT) && ss.format != s->sample_spec.format) ||
+                (!(s->flags & PA_STREAM_FIX_RATE) && ss.rate != s->sample_spec.rate) ||
+                (!(s->flags & PA_STREAM_FIX_CHANNELS) && !pa_channel_map_equal(&cm, &s->channel_map))))) {
             pa_context_fail(s->context, PA_ERR_PROTOCOL);
             goto finish;
         }
@@ -977,6 +1126,24 @@ void pa_create_stream_callback(pa_pdispatch *pd, uint32_t command, uint32_t tag,
             s->timing_info.configured_sink_usec = usec;
     }
 
+    if ((s->context->version >= 21 && s->direction == PA_STREAM_PLAYBACK)
+        || s->context->version >= 22) {
+
+        pa_format_info *f = pa_format_info_new();
+        pa_tagstruct_get_format_info(t, f);
+
+        if (pa_format_info_valid(f))
+            s->format = f;
+        else {
+            pa_format_info_free(f);
+            if (s->n_formats > 0) {
+                /* We used the extended API, so we should have got back a proper format */
+                pa_context_fail(s->context, PA_ERR_PROTOCOL);
+                goto finish;
+            }
+        }
+    }
+
     if (!pa_tagstruct_eof(t)) {
         pa_context_fail(s->context, PA_ERR_PROTOCOL);
         goto finish;
@@ -986,10 +1153,11 @@ void pa_create_stream_callback(pa_pdispatch *pd, uint32_t command, uint32_t tag,
         pa_assert(!s->record_memblockq);
 
         s->record_memblockq = pa_memblockq_new(
+                "client side record memblockq",
                 0,
                 s->buffer_attr.maxlength,
                 0,
-                pa_frame_size(&s->sample_spec),
+                &s->sample_spec,
                 1,
                 0,
                 0,
@@ -997,7 +1165,7 @@ void pa_create_stream_callback(pa_pdispatch *pd, uint32_t command, uint32_t tag,
     }
 
     s->channel_valid = TRUE;
-    pa_dynarray_put((s->direction == PA_STREAM_RECORD) ? s->context->record_streams : s->context->playback_streams, s->channel, s);
+    pa_hashmap_put((s->direction == PA_STREAM_RECORD) ? s->context->record_streams : s->context->playback_streams, PA_UINT32_TO_PTR(s->channel), s);
 
     create_stream_complete(s);
 
@@ -1016,7 +1184,9 @@ static int create_stream(
 
     pa_tagstruct *t;
     uint32_t tag;
-    pa_bool_t volume_set = FALSE;
+    pa_bool_t volume_set = !!volume;
+    pa_cvolume cv;
+    uint32_t i;
 
     pa_assert(s);
     pa_assert(PA_REFCNT_VALUE(s) >= 1);
@@ -1042,34 +1212,37 @@ static int create_stream(
                                               PA_STREAM_EARLY_REQUESTS|
                                               PA_STREAM_DONT_INHIBIT_AUTO_SUSPEND|
                                               PA_STREAM_START_UNMUTED|
-                                              PA_STREAM_FAIL_ON_SUSPEND)), PA_ERR_INVALID);
+                                              PA_STREAM_FAIL_ON_SUSPEND|
+                                              PA_STREAM_RELATIVE_VOLUME|
+                                              PA_STREAM_PASSTHROUGH)), PA_ERR_INVALID);
+
 
     PA_CHECK_VALIDITY(s->context, s->context->version >= 12 || !(flags & PA_STREAM_VARIABLE_RATE), PA_ERR_NOTSUPPORTED);
     PA_CHECK_VALIDITY(s->context, s->context->version >= 13 || !(flags & PA_STREAM_PEAK_DETECT), PA_ERR_NOTSUPPORTED);
     PA_CHECK_VALIDITY(s->context, s->context->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
-    /* Althought some of the other flags are not supported on older
+    /* Although some of the other flags are not supported on older
      * version, we don't check for them here, because it doesn't hurt
      * when they are passed but actually not supported. This makes
      * client development easier */
 
-    PA_CHECK_VALIDITY(s->context, direction == PA_STREAM_PLAYBACK || !(flags & (PA_STREAM_START_MUTED)), PA_ERR_INVALID);
     PA_CHECK_VALIDITY(s->context, direction == PA_STREAM_RECORD || !(flags & (PA_STREAM_PEAK_DETECT)), PA_ERR_INVALID);
-    PA_CHECK_VALIDITY(s->context, !volume || volume->channels == s->sample_spec.channels, PA_ERR_INVALID);
+    PA_CHECK_VALIDITY(s->context, !volume || s->n_formats || (pa_sample_spec_valid(&s->sample_spec) && volume->channels == s->sample_spec.channels), PA_ERR_INVALID);
     PA_CHECK_VALIDITY(s->context, !sync_stream || (direction == PA_STREAM_PLAYBACK && sync_stream->direction == PA_STREAM_PLAYBACK), PA_ERR_INVALID);
     PA_CHECK_VALIDITY(s->context, (flags & (PA_STREAM_ADJUST_LATENCY|PA_STREAM_EARLY_REQUESTS)) != (PA_STREAM_ADJUST_LATENCY|PA_STREAM_EARLY_REQUESTS), PA_ERR_INVALID);
 
     pa_stream_ref(s);
 
     s->direction = direction;
-    s->flags = flags;
-    s->corked = !!(flags & PA_STREAM_START_CORKED);
 
     if (sync_stream)
         s->syncid = sync_stream->syncid;
 
     if (attr)
         s->buffer_attr = *attr;
-    automatic_buffer_attr(s, &s->buffer_attr, &s->sample_spec);
+    patch_buffer_attr(s, &s->buffer_attr, &flags);
+
+    s->flags = flags;
+    s->corked = !!(flags & PA_STREAM_START_CORKED);
 
     if (flags & PA_STREAM_INTERPOLATE_TIMING) {
         pa_usec_t x;
@@ -1108,9 +1281,18 @@ static int create_stream(
             PA_TAG_BOOLEAN, s->corked,
             PA_TAG_INVALID);
 
-    if (s->direction == PA_STREAM_PLAYBACK) {
-        pa_cvolume cv;
+    if (!volume) {
+        if (pa_sample_spec_valid(&s->sample_spec))
+            volume = pa_cvolume_reset(&cv, s->sample_spec.channels);
+        else {
+            /* This is not really relevant, since no volume was set, and
+             * the real number of channels is embedded in the format_info
+             * structure */
+            volume = pa_cvolume_reset(&cv, PA_CHANNELS_MAX);
+        }
+    }
 
+    if (s->direction == PA_STREAM_PLAYBACK) {
         pa_tagstruct_put(
                 t,
                 PA_TAG_U32, s->buffer_attr.tlength,
@@ -1118,11 +1300,6 @@ static int create_stream(
                 PA_TAG_U32, s->buffer_attr.minreq,
                 PA_TAG_U32, s->syncid,
                 PA_TAG_INVALID);
-
-        volume_set = !!volume;
-
-        if (!volume)
-            volume = pa_cvolume_reset(&cv, s->sample_spec.channels);
 
         pa_tagstruct_put_cvolume(t, volume);
     } else
@@ -1173,6 +1350,29 @@ static int create_stream(
 
         pa_tagstruct_put_boolean(t, flags & PA_STREAM_DONT_INHIBIT_AUTO_SUSPEND);
         pa_tagstruct_put_boolean(t, flags & PA_STREAM_FAIL_ON_SUSPEND);
+    }
+
+    if (s->context->version >= 17 && s->direction == PA_STREAM_PLAYBACK)
+        pa_tagstruct_put_boolean(t, flags & PA_STREAM_RELATIVE_VOLUME);
+
+    if (s->context->version >= 18 && s->direction == PA_STREAM_PLAYBACK)
+        pa_tagstruct_put_boolean(t, flags & (PA_STREAM_PASSTHROUGH));
+
+    if ((s->context->version >= 21 && s->direction == PA_STREAM_PLAYBACK)
+        || s->context->version >= 22) {
+
+        pa_tagstruct_putu8(t, s->n_formats);
+        for (i = 0; i < s->n_formats; i++)
+            pa_tagstruct_put_format_info(t, s->req_formats[i]);
+    }
+
+    if (s->context->version >= 22 && s->direction == PA_STREAM_RECORD) {
+        pa_tagstruct_put_cvolume(t, volume);
+        pa_tagstruct_put_boolean(t, flags & PA_STREAM_START_MUTED);
+        pa_tagstruct_put_boolean(t, volume_set);
+        pa_tagstruct_put_boolean(t, flags & (PA_STREAM_START_MUTED|PA_STREAM_START_UNMUTED));
+        pa_tagstruct_put_boolean(t, flags & PA_STREAM_RELATIVE_VOLUME);
+        pa_tagstruct_put_boolean(t, flags & (PA_STREAM_PASSTHROUGH));
     }
 
     pa_pstream_send_tagstruct(s->context->pstream, t);
@@ -1354,6 +1554,10 @@ int pa_stream_write(
      * that's OK, the server side applies the same error */
     s->requested_bytes -= (seek == PA_SEEK_RELATIVE ? offset : 0) + (int64_t) length;
 
+#ifdef STREAM_DEBUG
+    pa_log_debug("wrote %lli, now at %lli", (long long) length, (long long) s->requested_bytes);
+#endif
+
     if (s->direction == PA_STREAM_PLAYBACK) {
 
         /* Update latency request correction */
@@ -1403,8 +1607,16 @@ int pa_stream_peek(pa_stream *s, const void **data, size_t *length) {
     if (!s->peek_memchunk.memblock) {
 
         if (pa_memblockq_peek(s->record_memblockq, &s->peek_memchunk) < 0) {
+            /* record_memblockq is empty. */
             *data = NULL;
             *length = 0;
+            return 0;
+
+        } else if (!s->peek_memchunk.memblock) {
+            /* record_memblockq isn't empty, but it doesn't have any data at
+             * the current read index. */
+            *data = NULL;
+            *length = s->peek_memchunk.length;
             return 0;
         }
 
@@ -1424,7 +1636,7 @@ int pa_stream_drop(pa_stream *s) {
     PA_CHECK_VALIDITY(s->context, !pa_detect_fork(), PA_ERR_FORKED);
     PA_CHECK_VALIDITY(s->context, s->state == PA_STREAM_READY, PA_ERR_BADSTATE);
     PA_CHECK_VALIDITY(s->context, s->direction == PA_STREAM_RECORD, PA_ERR_BADSTATE);
-    PA_CHECK_VALIDITY(s->context, s->peek_memchunk.memblock, PA_ERR_BADSTATE);
+    PA_CHECK_VALIDITY(s->context, s->peek_memchunk.length > 0, PA_ERR_BADSTATE);
 
     pa_memblockq_drop(s->record_memblockq, s->peek_memchunk.length);
 
@@ -1432,9 +1644,13 @@ int pa_stream_drop(pa_stream *s) {
     if (s->timing_info_valid && !s->timing_info.read_index_corrupt)
         s->timing_info.read_index += (int64_t) s->peek_memchunk.length;
 
-    pa_assert(s->peek_data);
-    pa_memblock_release(s->peek_memchunk.memblock);
-    pa_memblock_unref(s->peek_memchunk.memblock);
+    if (s->peek_memchunk.memblock) {
+        pa_assert(s->peek_data);
+        s->peek_data = NULL;
+        pa_memblock_release(s->peek_memchunk.memblock);
+        pa_memblock_unref(s->peek_memchunk.memblock);
+    }
+
     pa_memchunk_reset(&s->peek_memchunk);
 
     return 0;
@@ -1486,7 +1702,7 @@ pa_operation * pa_stream_drain(pa_stream *s, pa_stream_success_cb_t cb, void *us
     pa_pstream_send_tagstruct(s->context->pstream, t);
     pa_pdispatch_register_reply(s->context->pdispatch, tag, DEFAULT_TIMEOUT, pa_stream_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
 
-    /* This might cause the read index to conitnue again, hence
+    /* This might cause the read index to continue again, hence
      * let's request a timing update */
     request_auto_timing_update(s, TRUE);
 
@@ -1615,7 +1831,7 @@ static void stream_get_timing_info_callback(pa_pdispatch *pd, uint32_t command, 
 
         pa_gettimeofday(&now);
 
-        /* Calculcate timestamps */
+        /* Calculate timestamps */
         if (pa_timeval_cmp(&local, &remote) <= 0 && pa_timeval_cmp(&remote, &now) <= 0) {
             /* local and remote seem to have synchronized clocks */
 
@@ -1692,8 +1908,8 @@ static void stream_get_timing_info_callback(pa_pdispatch *pd, uint32_t command, 
                 i->read_index -= (int64_t) pa_memblockq_get_length(o->stream->record_memblockq);
         }
 
-        /* Update smoother */
-        if (o->stream->smoother) {
+        /* Update smoother if we're not corked */
+        if (o->stream->smoother && !o->stream->corked) {
             pa_usec_t u, x;
 
             u = x = pa_rtclock_now() - i->transport_usec;
@@ -2121,6 +2337,11 @@ pa_operation* pa_stream_flush(pa_stream *s, pa_stream_success_cb_t cb, void *use
          * index, but the read index might jump. */
         invalidate_indexes(s, TRUE, FALSE);
 
+    /* Note that we do not update requested_bytes here. This is
+     * because we cannot really know how data actually was dropped
+     * from the write index due to this. This 'error' will be applied
+     * by both client and server and hence we should be fine. */
+
     return o;
 }
 
@@ -2328,6 +2549,16 @@ const pa_channel_map* pa_stream_get_channel_map(pa_stream *s) {
     return &s->channel_map;
 }
 
+const pa_format_info* pa_stream_get_format_info(pa_stream *s) {
+    pa_assert(s);
+    pa_assert(PA_REFCNT_VALUE(s) >= 1);
+
+    /* We don't have the format till routing is done */
+    PA_CHECK_VALIDITY_RETURN_NULL(s->context, s->state == PA_STREAM_READY, PA_ERR_BADSTATE);
+    PA_CHECK_VALIDITY_RETURN_NULL(s->context, !pa_detect_fork(), PA_ERR_FORKED);
+
+    return s->format;
+}
 const pa_buffer_attr* pa_stream_get_buffer_attr(pa_stream *s) {
     pa_assert(s);
     pa_assert(PA_REFCNT_VALUE(s) >= 1);
@@ -2407,6 +2638,7 @@ pa_operation* pa_stream_set_buffer_attr(pa_stream *s, const pa_buffer_attr *attr
     pa_operation *o;
     pa_tagstruct *t;
     uint32_t tag;
+    pa_buffer_attr copy;
 
     pa_assert(s);
     pa_assert(PA_REFCNT_VALUE(s) >= 1);
@@ -2430,6 +2662,10 @@ pa_operation* pa_stream_set_buffer_attr(pa_stream *s, const pa_buffer_attr *attr
             &tag);
     pa_tagstruct_putu32(t, s->channel);
 
+    copy = *attr;
+    patch_buffer_attr(s, &copy, NULL);
+    attr = &copy;
+
     pa_tagstruct_putu32(t, attr->maxlength);
 
     if (s->direction == PA_STREAM_PLAYBACK)
@@ -2451,7 +2687,7 @@ pa_operation* pa_stream_set_buffer_attr(pa_stream *s, const pa_buffer_attr *attr
     pa_pstream_send_tagstruct(s->context->pstream, t);
     pa_pdispatch_register_reply(s->context->pdispatch, tag, DEFAULT_TIMEOUT, stream_set_buffer_attr_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
 
-    /* This might cause changes in the read/write indexex, hence let's
+    /* This might cause changes in the read/write index, hence let's
      * request a timing update */
     request_auto_timing_update(s, TRUE);
 

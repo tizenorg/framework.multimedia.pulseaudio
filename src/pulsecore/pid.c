@@ -40,7 +40,6 @@
 #endif
 
 #include <pulse/xmalloc.h>
-#include <pulse/util.h>
 
 #include <pulsecore/core-error.h>
 #include <pulsecore/core-util.h>
@@ -88,10 +87,7 @@ static int open_pid_file(const char *fn, int mode) {
     for (;;) {
         struct stat st;
 
-        if ((fd = open(fn, mode
-#ifdef O_NOCTTY
-                       |O_NOCTTY
-#endif
+        if ((fd = pa_open_cloexec(fn, mode
 #ifdef O_NOFOLLOW
                        |O_NOFOLLOW
 #endif
@@ -146,7 +142,7 @@ static int proc_name_ours(pid_t pid, const char *procname) {
 
     pa_snprintf(bn, sizeof(bn), "/proc/%lu/stat", (unsigned long) pid);
 
-    if (!(f = fopen(bn, "r"))) {
+    if (!(f = pa_fopen_cloexec(bn, "r"))) {
         pa_log_info("Failed to open %s: %s", bn, pa_cstrerror(errno));
         return -1;
     } else {
@@ -221,7 +217,7 @@ int pa_pid_file_create(const char *procname) {
             if (procname)
                 if ((ours = proc_name_ours(pid, procname)) < 0) {
                     pa_log_warn("Could not check to see if pid %lu is a pulseaudio process. "
-                                "Asssuming it is and the daemon is already running.", (unsigned long) pid);
+                                "Assuming it is and the daemon is already running.", (unsigned long) pid);
                     goto fail;
                 }
 
@@ -324,7 +320,7 @@ fail:
 }
 
 /* Check whether the daemon is currently running, i.e. if a PID file
- * exists and the PID therein too. Returns 0 on succcess, -1
+ * exists and the PID therein too. Returns 0 on success, -1
  * otherwise. If pid is non-NULL and a running daemon was found,
  * return its PID therein */
 int pa_pid_file_check_running(pid_t *pid, const char *procname) {

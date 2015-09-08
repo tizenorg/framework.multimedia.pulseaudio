@@ -24,18 +24,15 @@
 #endif
 
 #include <unistd.h>
-#include <string.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <ctype.h>
 
 #include <pulse/xmalloc.h>
 #include <pulse/volume.h>
 #include <pulse/channelmap.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
@@ -55,6 +52,7 @@ static const char* const valid_modargs[] = {
 
 struct userdata {
     pa_hook_slot *sink_input_fixate_hook_slot;
+    const char *name;
 };
 
 static int parse_pos(const char *pos, double *f) {
@@ -90,7 +88,7 @@ static pa_hook_result_t sink_input_fixate_hook_callback(pa_core *core, pa_sink_i
     if ((id = pa_proplist_gets(data->proplist, PA_PROP_EVENT_ID))) {
 
         /* The test sounds should never be positioned in space, since
-         * they might be trigered themselves to configure the speakers
+         * they might be triggered themselves to configure the speakers
          * in space, which we don't want to mess up. */
 
         if (pa_startswith(id, "audio-channel-"))
@@ -135,7 +133,7 @@ static pa_hook_result_t sink_input_fixate_hook_callback(pa_core *core, pa_sink_i
     }
 
     pa_log_debug("Final volume factor %s.", pa_cvolume_snprint(t, sizeof(t), &v));
-    pa_sink_input_new_data_apply_volume_factor_sink(data, &v);
+    pa_sink_input_new_data_add_volume_factor_sink(data, u->name, &v);
 
     return PA_HOOK_OK;
 }
@@ -155,6 +153,7 @@ int pa__init(pa_module*m) {
     u->sink_input_fixate_hook_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SINK_INPUT_FIXATE], PA_HOOK_EARLY, (pa_hook_cb_t) sink_input_fixate_hook_callback, u);
 
     pa_modargs_free(ma);
+    u->name = m->name;
 
     return 0;
 
@@ -164,7 +163,7 @@ fail:
     if (ma)
         pa_modargs_free(ma);
 
-    return  -1;
+    return -1;
 }
 
 void pa__done(pa_module*m) {

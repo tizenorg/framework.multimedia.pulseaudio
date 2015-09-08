@@ -34,7 +34,9 @@
 #endif
 
 #include <pulse/gccmacro.h>
+#include <pulse/volume.h>
 #include <pulsecore/macro.h>
+#include <pulsecore/socket.h>
 
 #ifndef PACKAGE
 #error "Please include config.h before including this file!"
@@ -57,8 +59,8 @@ struct timeval;
 void pa_make_fd_nonblock(int fd);
 void pa_make_fd_cloexec(int fd);
 
-int pa_make_secure_dir(const char* dir, mode_t m, uid_t uid, gid_t gid);
-int pa_make_secure_parent_dir(const char *fn, mode_t, uid_t uid, gid_t gid);
+int pa_make_secure_dir(const char* dir, mode_t m, uid_t uid, gid_t gid, pa_bool_t update_perms);
+int pa_make_secure_parent_dir(const char *fn, mode_t, uid_t uid, gid_t gid, pa_bool_t update_perms);
 
 ssize_t pa_read(int fd, void *buf, size_t count, int *type);
 ssize_t pa_write(int fd, const void *buf, size_t count, int *type);
@@ -82,6 +84,8 @@ void pa_reset_priority(void);
 
 int pa_parse_boolean(const char *s) PA_GCC_PURE;
 
+int pa_parse_volume(const char *s, pa_volume_t *volume);
+
 static inline const char *pa_yes_no(pa_bool_t b) {
     return b ? "yes" : "no";
 }
@@ -99,9 +103,11 @@ static inline const char *pa_strna(const char *x) {
 }
 
 char *pa_split(const char *c, const char*delimiters, const char **state);
+const char *pa_split_in_place(const char *c, const char*delimiters, int *n, const char **state);
 char *pa_split_spaces(const char *c, const char **state);
 
 char *pa_strip_nl(char *s);
+char *pa_strip(char *s);
 
 const char *pa_sig2str(int sig) PA_GCC_PURE;
 
@@ -133,6 +139,7 @@ char *pa_state_path(const char *fn, pa_bool_t prepend_machine_id);
 
 int pa_atoi(const char *s, int32_t *ret_i);
 int pa_atou(const char *s, uint32_t *ret_u);
+int pa_atol(const char *s, long *ret_l);
 int pa_atod(const char *s, double *ret_d);
 
 size_t pa_snprintf(char *str, size_t size, const char *format, ...);
@@ -202,6 +209,16 @@ pa_bool_t pa_in_system_mode(void);
 
 #define pa_streq(a,b) (!strcmp((a),(b)))
 
+/* Like pa_streq, but does not blow up on NULL pointers. */
+static inline bool pa_safe_streq(const char *a, const char *b)
+{
+    if (a == NULL || b == NULL)
+        return a == b;
+    return pa_streq(a, b);
+}
+
+pa_bool_t pa_str_in_list_spaces(const char *needle, const char *haystack);
+
 char *pa_get_host_name_malloc(void);
 char *pa_get_user_name_malloc(void);
 
@@ -224,6 +241,13 @@ unsigned pa_ncpus(void);
 
 char *pa_replace(const char*s, const char*a, const char *b);
 
+/* Escapes p by inserting backslashes in front of backslashes. chars is a
+ * regular (i.e. NULL-terminated) string containing additional characters that
+ * should be escaped. chars can be NULL. The caller has to free the returned
+ * string. */
+char *pa_escape(const char *p, const char *chars);
+
+/* Does regular backslash unescaping. Returns the argument p. */
 char *pa_unescape(char *p);
 
 char *pa_realpath(const char *path);
@@ -245,13 +269,23 @@ size_t pa_pipe_buf(int fd);
 
 void pa_reset_personality(void);
 
-#if defined(__linux__) && !defined(__OPTIMIZE__)
-pa_bool_t pa_run_from_build_tree(void);
-#endif
+pa_bool_t pa_run_from_build_tree(void) PA_GCC_CONST;
 
 const char *pa_get_temp_dir(void);
 
+int pa_open_cloexec(const char *fn, int flags, mode_t mode);
+int pa_socket_cloexec(int domain, int type, int protocol);
+int pa_pipe_cloexec(int pipefd[2]);
+int pa_accept_cloexec(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+FILE* pa_fopen_cloexec(const char *path, const char *mode);
+
+void pa_nullify_stdfds(void);
+
 char *pa_read_line_from_file(const char *fn);
 pa_bool_t pa_running_in_vm(void);
+
+#ifdef OS_IS_WIN32
+char *pa_win32_get_toplevel(HANDLE handle);
+#endif
 
 #endif

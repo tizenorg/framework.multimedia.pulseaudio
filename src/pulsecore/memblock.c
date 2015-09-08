@@ -42,7 +42,10 @@
 #include <pulsecore/log.h>
 #include <pulsecore/hashmap.h>
 #include <pulsecore/semaphore.h>
+#include <pulsecore/mutex.h>
 #include <pulsecore/macro.h>
+#include <pulsecore/refcnt.h>
+#include <pulsecore/llist.h>
 #include <pulsecore/flist.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/memtrap.h>
@@ -82,7 +85,7 @@ struct pa_memblock {
             pa_free_cb_t free_cb;
         } user;
 
-        struct  {
+        struct {
             uint32_t id;
             pa_memimport_segment *segment;
         } imported;
@@ -226,7 +229,7 @@ static pa_memblock *memblock_new_appended(pa_mempool *p, size_t length) {
     /* If -1 is passed as length we choose the size for the caller. */
 
     if (length == (size_t) -1)
-        length = p->block_size - PA_ALIGN(sizeof(pa_memblock));
+        length = pa_mempool_block_size_max(p);
 
     b = pa_xmalloc(PA_ALIGN(sizeof(pa_memblock)) + length);
     PA_REFCNT_INIT(b);
@@ -258,7 +261,7 @@ static struct mempool_slot* mempool_allocate_slot(pa_mempool *p) {
             slot = (struct mempool_slot*) ((uint8_t*) p->memory.ptr + (p->block_size * (size_t) idx));
 
         if (!slot) {
-            if (pa_log_ratelimit())
+            if (pa_log_ratelimit(PA_LOG_DEBUG))
                 pa_log_debug("Pool full");
             pa_atomic_inc(&p->stat.n_pool_full);
             return NULL;
@@ -456,6 +459,13 @@ void* pa_memblock_acquire(pa_memblock *b) {
     return pa_atomic_ptr_load(&b->data);
 }
 
+/* No lock necessary */
+void *pa_memblock_acquire_chunk(const pa_memchunk *c) {
+    pa_assert(c);
+
+    return (uint8_t *) pa_memblock_acquire(c->memblock) + c->index;
+}
+
 /* No lock necessary, in corner cases locks by its own */
 void pa_memblock_release(pa_memblock *b) {
     int r;
@@ -515,8 +525,8 @@ static void memblock_free(pa_memblock *b) {
 
         case PA_MEMBLOCK_APPENDED:
 
-            /* We could attached it unused_memblocks, but that would
-             * probably waste some considerable memory */
+            /* We could attach it to unused_memblocks, but that would
+             * probably waste some considerable amount of memory */
             pa_xfree(b);
             break;
 
@@ -531,9 +541,7 @@ static void memblock_free(pa_memblock *b) {
 
             pa_mutex_lock(import->mutex);
 
-            pa_assert_se(pa_hashmap_remove(
-                                 import->blocks,
-                                 PA_UINT32_TO_PTR(b->per_type.imported.id)));
+            pa_assert_se(pa_hashmap_remove(import->blocks, PA_UINT32_TO_PTR(b->per_type.imported.id)));
 
             pa_assert(segment->n_blocks >= 1);
             if (-- segment->n_blocks <= 0)
@@ -693,9 +701,7 @@ static void memblock_replace_import(pa_memblock *b) {
 
     pa_mutex_lock(import->mutex);
 
-    pa_assert_se(pa_hashmap_remove(
-                         import->blocks,
-                         PA_UINT32_TO_PTR(b->per_type.imported.id)));
+    pa_assert_se(pa_hashmap_remove(import->blocks, PA_UINT32_TO_PTR(b->per_type.imported.id)));
 
     memblock_make_local(b);
 
@@ -711,9 +717,6 @@ pa_mempool* pa_mempool_new(pa_bool_t shared, size_t size) {
     char t1[PA_BYTES_SNPRINT_MAX], t2[PA_BYTES_SNPRINT_MAX];
 
     p = pa_xnew(pa_mempool, 1);
-
-    p->mutex = pa_mutex_new(TRUE, TRUE);
-    p->semaphore = pa_semaphore_new(0);
 
     p->block_size = PA_PAGE_ALIGN(PA_MEMPOOL_SLOT_SIZE);
     if (p->block_size < PA_PAGE_SIZE)
@@ -745,6 +748,9 @@ pa_mempool* pa_mempool_new(pa_bool_t shared, size_t size) {
 
     PA_LLIST_HEAD_INIT(pa_memimport, p->imports);
     PA_LLIST_HEAD_INIT(pa_memexport, p->exports);
+
+    p->mutex = pa_mutex_new(TRUE, TRUE);
+    p->semaphore = pa_semaphore_new(0);
 
     p->free_slots = pa_flist_new(p->n_blocks);
 
@@ -874,7 +880,7 @@ pa_bool_t pa_mempool_is_shared(pa_mempool *p) {
     return !!p->memory.shared;
 }
 
-/* For recieving blocks from other nodes */
+/* For receiving blocks from other nodes */
 pa_memimport* pa_memimport_new(pa_mempool *p, pa_memimport_release_cb_t cb, void *userdata) {
     pa_memimport *i;
 
@@ -958,8 +964,8 @@ void pa_memimport_free(pa_memimport *i) {
 
     pa_mutex_unlock(i->pool->mutex);
 
-    pa_hashmap_free(i->blocks, NULL, NULL);
-    pa_hashmap_free(i->segments, NULL, NULL);
+    pa_hashmap_free(i->blocks, NULL);
+    pa_hashmap_free(i->segments, NULL);
 
     pa_mutex_free(i->mutex);
 

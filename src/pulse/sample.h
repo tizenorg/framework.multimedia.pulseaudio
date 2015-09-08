@@ -26,7 +26,6 @@
 #include <inttypes.h>
 #include <sys/types.h>
 #include <sys/param.h>
-#include <math.h>
 
 #include <pulse/gccmacro.h>
 #include <pulse/cdecl.h>
@@ -72,7 +71,7 @@
  * \section chan_sec Channels
  *
  * PulseAudio supports up to 32 individual channels. The order of the
- * channels is up to the application, but they must be continous. To map
+ * channels is up to the application, but they must be continuous. To map
  * channels to speakers, see \ref channelmap.
  *
  * \section calc_sec Calculations
@@ -105,16 +104,26 @@
  */
 
 /** \file
- * Constants and routines for sample type handling */
+ * Constants and routines for sample type handling
+ *
+ * See also \subpage sample
+ */
 
 PA_C_DECL_BEGIN
 
 #if !defined(WORDS_BIGENDIAN)
+
 #if defined(__BYTE_ORDER)
 #if __BYTE_ORDER == __BIG_ENDIAN
 #define WORDS_BIGENDIAN
 #endif
 #endif
+
+/* On Sparc, WORDS_BIGENDIAN needs to be set if _BIG_ENDIAN is defined. */
+#ifdef _BIG_ENDIAN
+#define WORDS_BIGENDIAN
+#endif
+
 #endif
 
 /** Maximum number of allowed channels */
@@ -309,15 +318,15 @@ char* pa_sample_spec_snprint(char *s, size_t l, const pa_sample_spec *spec);
  * ABI. \since 0.9.16 */
 #define PA_BYTES_SNPRINT_MAX 11
 
-/** Pretty print a byte size value. (i.e. "2.5 MiB") */
+/** Pretty print a byte size value (i.e.\ "2.5 MiB") */
 char* pa_bytes_snprint(char *s, size_t l, unsigned v);
 
 /** Return 1 when the specified format is little endian, return -1
- * when endianess does not apply to this format. \since 0.9.16 */
+ * when endianness does not apply to this format. \since 0.9.16 */
 int pa_sample_format_is_le(pa_sample_format_t f) PA_GCC_PURE;
 
 /** Return 1 when the specified format is big endian, return -1 when
- * endianess does not apply to this format. \since 0.9.16 */
+ * endianness does not apply to this format. \since 0.9.16 */
 int pa_sample_format_is_be(pa_sample_format_t f) PA_GCC_PURE;
 
 #ifdef WORDS_BIGENDIAN
@@ -325,10 +334,10 @@ int pa_sample_format_is_be(pa_sample_format_t f) PA_GCC_PURE;
 #define pa_sample_format_is_re(f) pa_sample_format_is_le(f)
 #else
 /** Return 1 when the specified format is native endian, return -1
- * when endianess does not apply to this format. \since 0.9.16 */
+ * when endianness does not apply to this format. \since 0.9.16 */
 #define pa_sample_format_is_ne(f) pa_sample_format_is_le(f)
 /** Return 1 when the specified format is reverse endian, return -1
- * when endianess does not apply to this format. \since 0.9.16 */
+ * when endianness does not apply to this format. \since 0.9.16 */
 #define pa_sample_format_is_re(f) pa_sample_format_is_be(f)
 #endif
 

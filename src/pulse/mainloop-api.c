@@ -26,9 +26,8 @@
 #include <stdlib.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/gccmacro.h>
-#include <pulse/i18n.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/macro.h>
 
 #include "mainloop-api.h"

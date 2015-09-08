@@ -32,57 +32,43 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <signal.h>
-#include <limits.h>
-#include <locale.h>
 
 #ifdef HAVE_SYS_WAIT_H
 #include <sys/wait.h>
 #endif
 
-#ifdef HAVE_SYS_SOCKET_H
-#include <sys/socket.h>
-#endif
-#ifdef HAVE_SYS_UN_H
-#include <sys/un.h>
-#endif
 #ifdef HAVE_NETDB_H
 #include <netdb.h>
 #endif
 
 #include <pulse/version.h>
 #include <pulse/xmalloc.h>
-#include <pulse/utf8.h>
 #include <pulse/util.h>
-#include <pulse/i18n.h>
 #include <pulse/mainloop.h>
 #include <pulse/timeval.h>
+#include <pulse/fork-detect.h>
+#include <pulse/client-conf.h>
+#ifdef HAVE_X11
+#include <pulse/client-conf-x11.h>
+#endif
 
-#include <pulsecore/winsock.h>
 #include <pulsecore/core-error.h>
-
+#include <pulsecore/i18n.h>
 #include <pulsecore/native-common.h>
 #include <pulsecore/pdispatch.h>
 #include <pulsecore/pstream.h>
-#include <pulsecore/dynarray.h>
+#include <pulsecore/hashmap.h>
 #include <pulsecore/socket-client.h>
 #include <pulsecore/pstream-util.h>
 #include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/log.h>
-#include <pulsecore/socket-util.h>
+#include <pulsecore/socket.h>
 #include <pulsecore/creds.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/proplist-util.h>
 
 #include "internal.h"
-
-#include "client-conf.h"
-#include "fork-detect.h"
-
-#ifdef HAVE_X11
-#include "client-conf-x11.h"
-#endif
-
 #include "context.h"
 
 void pa_command_extension(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_tagstruct *t, void *userdata);
@@ -131,6 +117,9 @@ static void reset_callbacks(pa_context *c) {
     c->ext_device_manager.callback = NULL;
     c->ext_device_manager.userdata = NULL;
 
+    c->ext_device_restore.callback = NULL;
+    c->ext_device_restore.userdata = NULL;
+
     c->ext_stream_restore.callback = NULL;
     c->ext_stream_restore.userdata = NULL;
 }
@@ -145,7 +134,7 @@ pa_context *pa_context_new_with_proplist(pa_mainloop_api *mainloop, const char *
 
     pa_init_i18n();
 
-    c = pa_xnew(pa_context, 1);
+    c = pa_xnew0(pa_context, 1);
     PA_REFCNT_INIT(c);
 
     c->proplist = p ? pa_proplist_copy(p) : pa_proplist_new();
@@ -157,11 +146,8 @@ pa_context *pa_context_new_with_proplist(pa_mainloop_api *mainloop, const char *
     c->system_bus = c->session_bus = NULL;
 #endif
     c->mainloop = mainloop;
-    c->client = NULL;
-    c->pstream = NULL;
-    c->pdispatch = NULL;
-    c->playback_streams = pa_dynarray_new();
-    c->record_streams = pa_dynarray_new();
+    c->playback_streams = pa_hashmap_new(pa_idxset_trivial_hash_func, pa_idxset_trivial_compare_func);
+    c->record_streams = pa_hashmap_new(pa_idxset_trivial_hash_func, pa_idxset_trivial_compare_func);
     c->client_index = PA_INVALID_INDEX;
     c->use_rtclock = pa_mainloop_is_our_api(mainloop);
 
@@ -170,21 +156,8 @@ pa_context *pa_context_new_with_proplist(pa_mainloop_api *mainloop, const char *
 
     c->error = PA_OK;
     c->state = PA_CONTEXT_UNCONNECTED;
-    c->ctag = 0;
-    c->csyncid = 0;
 
     reset_callbacks(c);
-
-    c->is_local = FALSE;
-    c->server_list = NULL;
-    c->server = NULL;
-
-    c->do_shm = FALSE;
-
-    c->server_specified = FALSE;
-    c->no_fail = FALSE;
-    c->do_autospawn = FALSE;
-    memset(&c->spawn_api, 0, sizeof(c->spawn_api));
 
 #ifndef MSG_NOSIGNAL
 #ifdef SIGPIPE
@@ -255,20 +228,22 @@ static void context_free(pa_context *c) {
 
 #ifdef HAVE_DBUS
     if (c->system_bus) {
-        dbus_connection_remove_filter(pa_dbus_wrap_connection_get(c->system_bus), filter_cb, c);
+        if (c->filter_added)
+            dbus_connection_remove_filter(pa_dbus_wrap_connection_get(c->system_bus), filter_cb, c);
         pa_dbus_wrap_connection_free(c->system_bus);
     }
 
     if (c->session_bus) {
-        dbus_connection_remove_filter(pa_dbus_wrap_connection_get(c->session_bus), filter_cb, c);
+        if (c->filter_added)
+            dbus_connection_remove_filter(pa_dbus_wrap_connection_get(c->session_bus), filter_cb, c);
         pa_dbus_wrap_connection_free(c->session_bus);
     }
 #endif
 
     if (c->record_streams)
-        pa_dynarray_free(c->record_streams, NULL, NULL);
+        pa_hashmap_free(c->record_streams, NULL);
     if (c->playback_streams)
-        pa_dynarray_free(c->playback_streams, NULL, NULL);
+        pa_hashmap_free(c->playback_streams, NULL);
 
     if (c->mempool)
         pa_mempool_free(c->mempool);
@@ -375,7 +350,7 @@ static void pstream_memblock_callback(pa_pstream *p, uint32_t channel, int64_t o
 
     pa_context_ref(c);
 
-    if ((s = pa_dynarray_get(c->record_streams, channel))) {
+    if ((s = pa_hashmap_get(c->record_streams, PA_UINT32_TO_PTR(channel)))) {
 
         if (chunk->memblock) {
             pa_memblockq_seek(s->record_memblockq, offset, seek, TRUE);
@@ -543,8 +518,8 @@ static void setup_context(pa_context *c, pa_iochannel *io) {
     c->pstream = pa_pstream_new(c->mainloop, io, c->mempool);
 
     pa_pstream_set_die_callback(c->pstream, pstream_die_callback, c);
-    pa_pstream_set_recieve_packet_callback(c->pstream, pstream_packet_callback, c);
-    pa_pstream_set_recieve_memblock_callback(c->pstream, pstream_memblock_callback, c);
+    pa_pstream_set_receive_packet_callback(c->pstream, pstream_packet_callback, c);
+    pa_pstream_set_receive_memblock_callback(c->pstream, pstream_memblock_callback, c);
 
     pa_assert(!c->pdispatch);
     c->pdispatch = pa_pdispatch_new(c->mainloop, c->use_rtclock, command_table, PA_COMMAND_MAX);
@@ -588,74 +563,8 @@ static void setup_context(pa_context *c, pa_iochannel *io) {
     pa_context_unref(c);
 }
 
-#ifdef ENABLE_LEGACY_RUNTIME_DIR
-static char *get_old_legacy_runtime_dir(void) {
-    char *p, u[128];
-    struct stat st;
-
-    if (!pa_get_user_name(u, sizeof(u)))
-        return NULL;
-
-    p = pa_sprintf_malloc("/tmp/pulse-%s", u);
-
-    if (stat(p, &st) < 0) {
-        pa_xfree(p);
-        return NULL;
-    }
-
-    if (st.st_uid != getuid()) {
-        pa_xfree(p);
-        return NULL;
-    }
-
-    return p;
-}
-
-static char *get_very_old_legacy_runtime_dir(void) {
-    char *p, h[128];
-    struct stat st;
-
-    if (!pa_get_home_dir(h, sizeof(h)))
-        return NULL;
-
-    p = pa_sprintf_malloc("%s/.pulse", h);
-
-    if (stat(p, &st) < 0) {
-        pa_xfree(p);
-        return NULL;
-    }
-
-    if (st.st_uid != getuid()) {
-        pa_xfree(p);
-        return NULL;
-    }
-
-    return p;
-}
-#endif
-
 static pa_strlist *prepend_per_user(pa_strlist *l) {
     char *ufn;
-
-#ifdef ENABLE_LEGACY_RUNTIME_DIR
-    static char *legacy_dir;
-
-    /* The very old per-user instance path (< 0.9.11). This is supported only to ease upgrades */
-    if ((legacy_dir = get_very_old_legacy_runtime_dir())) {
-        char *p = pa_sprintf_malloc("%s" PA_PATH_SEP PA_NATIVE_DEFAULT_UNIX_SOCKET, legacy_dir);
-        l = pa_strlist_prepend(l, p);
-        pa_xfree(p);
-        pa_xfree(legacy_dir);
-    }
-
-    /* The old per-user instance path (< 0.9.12). This is supported only to ease upgrades */
-    if ((legacy_dir = get_old_legacy_runtime_dir())) {
-        char *p = pa_sprintf_malloc("%s" PA_PATH_SEP PA_NATIVE_DEFAULT_UNIX_SOCKET, legacy_dir);
-        l = pa_strlist_prepend(l, p);
-        pa_xfree(p);
-        pa_xfree(legacy_dir);
-    }
-#endif
 
     /* The per-user instance */
     if ((ufn = pa_runtime_path(PA_NATIVE_DEFAULT_UNIX_SOCKET))) {
@@ -681,7 +590,11 @@ static int context_autospawn(pa_context *c) {
         goto fail;
     }
 
+#ifdef SA_NOCLDWAIT
     if ((sa.sa_flags & SA_NOCLDWAIT) || sa.sa_handler == SIG_IGN) {
+#else
+    if (sa.sa_handler == SIG_IGN) {
+#endif
         pa_log_debug("Process disabled waitpid(), cannot autospawn.");
         pa_context_fail(c, PA_ERR_CONNECTIONREFUSED);
         goto fail;
@@ -794,6 +707,7 @@ static void track_pulseaudio_on_dbus(pa_context *c, DBusBusType type, pa_dbus_wr
         pa_log_warn("Failed to add filter function");
         goto fail;
     }
+    c->filter_added = TRUE;
 
     if (pa_dbus_add_matches(
                 pa_dbus_wrap_connection_get(*conn), &error,
@@ -987,18 +901,22 @@ int pa_context_connect(
         /* Prepend in reverse order */
 
         /* Follow the X display */
-        if ((d = getenv("DISPLAY"))) {
-            d = pa_xstrndup(d, strcspn(d, ":"));
+        if (c->conf->auto_connect_display) {
+            if ((d = getenv("DISPLAY"))) {
+                d = pa_xstrndup(d, strcspn(d, ":"));
 
-            if (*d)
-                c->server_list = pa_strlist_prepend(c->server_list, d);
+                if (*d)
+                    c->server_list = pa_strlist_prepend(c->server_list, d);
 
-            pa_xfree(d);
+                pa_xfree(d);
+            }
         }
 
         /* Add TCP/IP on the localhost */
-        c->server_list = pa_strlist_prepend(c->server_list, "tcp6:[::1]");
-        c->server_list = pa_strlist_prepend(c->server_list, "tcp4:127.0.0.1");
+        if (c->conf->auto_connect_localhost) {
+            c->server_list = pa_strlist_prepend(c->server_list, "tcp6:[::1]");
+            c->server_list = pa_strlist_prepend(c->server_list, "tcp4:127.0.0.1");
+        }
 
         /* The system wide instance via PF_LOCAL */
         c->server_list = pa_strlist_prepend(c->server_list, PA_SYSTEM_RUNTIME_PATH PA_PATH_SEP PA_NATIVE_DEFAULT_UNIX_SOCKET);
@@ -1010,6 +928,7 @@ int pa_context_connect(
     /* Set up autospawning */
     if (!(flags & PA_CONTEXT_NOAUTOSPAWN) && c->conf->autospawn) {
 
+#ifdef HAVE_GETUID
         if (getuid() == 0)
             pa_log_debug("Not doing autospawn since we are root.");
         else {
@@ -1018,6 +937,7 @@ int pa_context_connect(
             if (api)
                 c->spawn_api = *api;
         }
+#endif
     }
 
     pa_context_set_state(c, PA_CONTEXT_CONNECTING);
@@ -1234,6 +1154,69 @@ pa_operation* pa_context_set_default_sink(pa_context *c, const char *name, pa_co
     return o;
 }
 
+#ifdef __TIZEN__
+pa_operation* pa_context_set_cork_all(pa_context *c, int b, pa_context_success_cb_t cb, void *userdata) {
+    pa_tagstruct *t;
+    pa_operation *o;
+    uint32_t tag;
+
+    pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
+
+    o = pa_operation_new(c, NULL, (pa_operation_cb_t) cb, userdata);
+    t = pa_tagstruct_command(c, PA_COMMAND_CORK_PLAYBACK_STREAM_ALL, &tag);
+    pa_tagstruct_put_boolean(t, !!b);
+    pa_pstream_send_tagstruct(c->pstream, t);
+    pa_pdispatch_register_reply(c->pdispatch, tag, DEFAULT_TIMEOUT,  pa_context_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
+
+    return o;
+}
+
+pa_operation* pa_context_set_default_sink_by_api_bus(pa_context *c, const char *api, const char *bus, pa_context_success_cb_t cb, void *userdata) {
+    pa_tagstruct *t;
+    pa_operation *o;
+    uint32_t tag;
+
+    pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
+
+    o = pa_operation_new(c, NULL, (pa_operation_cb_t) cb, userdata);
+    t = pa_tagstruct_command(c, PA_COMMAND_SET_DEFAULT_SINK_BY_API_BUS, &tag);
+    pa_tagstruct_puts(t, api);
+    pa_tagstruct_puts(t, bus);
+    pa_pstream_send_tagstruct(c->pstream, t);
+    pa_pdispatch_register_reply(c->pdispatch, tag, DEFAULT_TIMEOUT,  pa_context_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
+
+    return o;
+}
+
+pa_operation* pa_context_set_default_sink_for_usb(pa_context *c, const char *name, pa_context_success_cb_t cb, void *userdata) {
+    pa_tagstruct *t;
+    pa_operation *o;
+    uint32_t tag;
+
+    pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
+
+    o = pa_operation_new(c, NULL, (pa_operation_cb_t) cb, userdata);
+    t = pa_tagstruct_command(c, PA_COMMAND_SET_DEFAULT_SINK_FOR_USB, &tag);
+    pa_tagstruct_puts(t, name);
+    pa_pstream_send_tagstruct(c->pstream, t);
+    pa_pdispatch_register_reply(c->pdispatch, tag, DEFAULT_TIMEOUT,  pa_context_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
+
+    return o;
+}
+#endif /* __TIZEN__ */
+
 pa_operation* pa_context_set_default_source(pa_context *c, const char *name, pa_context_success_cb_t cb, void *userdata) {
     pa_tagstruct *t;
     pa_operation *o;
@@ -1295,7 +1278,7 @@ pa_operation* pa_context_set_name(pa_context *c, const char *name, pa_context_su
 }
 
 const char* pa_get_library_version(void) {
-    return PACKAGE_VERSION;
+    return pa_get_headers_version();
 }
 
 const char* pa_context_get_server(pa_context *c) {
@@ -1435,10 +1418,12 @@ void pa_command_extension(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_t
         goto finish;
     }
 
-    if (!strcmp(name, "module-stream-restore"))
-        pa_ext_stream_restore_command(c, tag, t);
-    else if (!strcmp(name, "module-device-manager"))
+    if (pa_streq(name, "module-device-manager"))
         pa_ext_device_manager_command(c, tag, t);
+    else if (pa_streq(name, "module-device-restore"))
+        pa_ext_device_restore_command(c, tag, t);
+    else if (pa_streq(name, "module-stream-restore"))
+        pa_ext_stream_restore_command(c, tag, t);
     else
         pa_log(_("Received message for unknown extension '%s'"), name);
 
@@ -1488,6 +1473,7 @@ pa_time_event* pa_context_rttime_new(pa_context *c, pa_usec_t usec, pa_time_even
     struct timeval tv;
 
     pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
     pa_assert(c->mainloop);
 
     if (usec == PA_USEC_INVALID)
@@ -1502,7 +1488,9 @@ void pa_context_rttime_restart(pa_context *c, pa_time_event *e, pa_usec_t usec) 
     struct timeval tv;
 
     pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
     pa_assert(c->mainloop);
+
 
     if (usec == PA_USEC_INVALID)
         c->mainloop->time_restart(e, NULL);
@@ -1510,4 +1498,18 @@ void pa_context_rttime_restart(pa_context *c, pa_time_event *e, pa_usec_t usec) 
         pa_timeval_rtstore(&tv, usec, c->use_rtclock);
         c->mainloop->time_restart(e, &tv);
     }
+}
+
+size_t pa_context_get_tile_size(pa_context *c, const pa_sample_spec *ss) {
+    size_t fs, mbs;
+
+    pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
+
+    PA_CHECK_VALIDITY_RETURN_ANY(c, !pa_detect_fork(), PA_ERR_FORKED, (size_t) -1);
+    PA_CHECK_VALIDITY_RETURN_ANY(c, !ss || pa_sample_spec_valid(ss), PA_ERR_INVALID, (size_t) -1);
+
+    fs = ss ? pa_frame_size(ss) : 1;
+    mbs = PA_ROUND_DOWN(pa_mempool_block_size_max(c->mempool), fs);
+    return PA_MAX(mbs, fs);
 }

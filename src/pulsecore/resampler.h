@@ -42,6 +42,9 @@ typedef enum pa_resample_method {
     PA_RESAMPLER_SPEEX_FIXED_BASE,
     PA_RESAMPLER_SPEEX_FIXED_MAX = PA_RESAMPLER_SPEEX_FIXED_BASE + 10,
     PA_RESAMPLER_FFMPEG,
+#ifdef HAVE_SEC_SRC
+    PA_RESAMPLER_SECSRC,
+#endif
     PA_RESAMPLER_AUTO, /* automatic select based on sample format */
     PA_RESAMPLER_COPY,
     PA_RESAMPLER_PEAKS,

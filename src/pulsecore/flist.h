@@ -32,24 +32,27 @@
 
 typedef struct pa_flist pa_flist;
 
-/* Size is required to be a power of two, or 0 for the default size */
 pa_flist * pa_flist_new(unsigned size);
+/* Name string is copied and added to flist structure. The original is
+ * responsibility of the caller. The name is only used for debug printing. */
+pa_flist * pa_flist_new_with_name(unsigned size, const char *name);
 void pa_flist_free(pa_flist *l, pa_free_cb_t free_cb);
 
 /* Please note that this routine might fail! */
 int pa_flist_push(pa_flist*l, void *p);
 void* pa_flist_pop(pa_flist*l);
 
-/* Please not that the destructor stuff is not really necesary, we do
+/* Please note that the destructor stuff is not really necessary, we do
  * this just to make valgrind output more useful. */
 
 #define PA_STATIC_FLIST_DECLARE(name, size, free_cb)                    \
     static struct {                                                     \
-        pa_flist *flist;                                                \
+        pa_flist *volatile flist;                                       \
         pa_once once;                                                   \
     } name##_flist = { NULL, PA_ONCE_INIT };                            \
     static void name##_flist_init(void) {                               \
-        name##_flist.flist = pa_flist_new(size);                        \
+        name##_flist.flist =                                            \
+            pa_flist_new_with_name(size, __FILE__ ": " #name);          \
     }                                                                   \
     static inline pa_flist* name##_flist_get(void) {                    \
         pa_run_once(&name##_flist.once, name##_flist_init);             \

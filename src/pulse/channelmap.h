@@ -65,7 +65,10 @@
  */
 
 /** \file
- * Constants and routines for channel mapping handling */
+ * Constants and routines for channel mapping handling
+ *
+ * See also \subpage channelmap
+ */
 
 PA_C_DECL_BEGIN
 
@@ -74,9 +77,9 @@ typedef enum pa_channel_position {
     PA_CHANNEL_POSITION_INVALID = -1,
     PA_CHANNEL_POSITION_MONO = 0,
 
-    PA_CHANNEL_POSITION_FRONT_LEFT,               /* Apple calls this 'Left' */
-    PA_CHANNEL_POSITION_FRONT_RIGHT,              /* Apple calls this 'Right' */
-    PA_CHANNEL_POSITION_FRONT_CENTER,             /* Apple calls this 'Center' */
+    PA_CHANNEL_POSITION_FRONT_LEFT,               /**< Apple, Dolby call this 'Left' */
+    PA_CHANNEL_POSITION_FRONT_RIGHT,              /**< Apple, Dolby call this 'Right' */
+    PA_CHANNEL_POSITION_FRONT_CENTER,             /**< Apple, Dolby call this 'Center' */
 
 /** \cond fulldocs */
     PA_CHANNEL_POSITION_LEFT = PA_CHANNEL_POSITION_FRONT_LEFT,
@@ -84,20 +87,20 @@ typedef enum pa_channel_position {
     PA_CHANNEL_POSITION_CENTER = PA_CHANNEL_POSITION_FRONT_CENTER,
 /** \endcond */
 
-    PA_CHANNEL_POSITION_REAR_CENTER,              /* Microsoft calls this 'Back Center', Apple calls this 'Center Surround' */
-    PA_CHANNEL_POSITION_REAR_LEFT,                /* Microsoft calls this 'Back Left', Apple calls this 'Left Surround' */
-    PA_CHANNEL_POSITION_REAR_RIGHT,               /* Microsoft calls this 'Back Right', Apple calls this 'Right Surround' */
+    PA_CHANNEL_POSITION_REAR_CENTER,              /**< Microsoft calls this 'Back Center', Apple calls this 'Center Surround', Dolby calls this 'Surround Rear Center' */
+    PA_CHANNEL_POSITION_REAR_LEFT,                /**< Microsoft calls this 'Back Left', Apple calls this 'Left Surround' (!), Dolby calls this 'Surround Rear Left'  */
+    PA_CHANNEL_POSITION_REAR_RIGHT,               /**< Microsoft calls this 'Back Right', Apple calls this 'Right Surround' (!), Dolby calls this 'Surround Rear Right'  */
 
-    PA_CHANNEL_POSITION_LFE,                      /* Microsoft calls this 'Low Frequency', Apple calls this 'LFEScreen' */
+    PA_CHANNEL_POSITION_LFE,                      /**< Microsoft calls this 'Low Frequency', Apple calls this 'LFEScreen' */
 /** \cond fulldocs */
     PA_CHANNEL_POSITION_SUBWOOFER = PA_CHANNEL_POSITION_LFE,
 /** \endcond */
 
-    PA_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER,     /* Apple calls this 'Left Center' */
-    PA_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER,    /* Apple calls this 'Right Center */
+    PA_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER,     /**< Apple, Dolby call this 'Left Center' */
+    PA_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER,    /**< Apple, Dolby call this 'Right Center */
 
-    PA_CHANNEL_POSITION_SIDE_LEFT,                /* Apple calls this 'Left Surround Direct' */
-    PA_CHANNEL_POSITION_SIDE_RIGHT,               /* Apple calls this 'Right Surround Direct' */
+    PA_CHANNEL_POSITION_SIDE_LEFT,                /**< Apple calls this 'Left Surround Direct', Dolby calls this 'Surround Left' (!) */
+    PA_CHANNEL_POSITION_SIDE_RIGHT,               /**< Apple calls this 'Right Surround Direct', Dolby calls this 'Surround Right' (!) */
 
     PA_CHANNEL_POSITION_AUX0,
     PA_CHANNEL_POSITION_AUX1,
@@ -132,15 +135,15 @@ typedef enum pa_channel_position {
     PA_CHANNEL_POSITION_AUX30,
     PA_CHANNEL_POSITION_AUX31,
 
-    PA_CHANNEL_POSITION_TOP_CENTER,               /* Apple calls this 'Top Center Surround' */
+    PA_CHANNEL_POSITION_TOP_CENTER,               /**< Apple calls this 'Top Center Surround' */
 
-    PA_CHANNEL_POSITION_TOP_FRONT_LEFT,           /* Apple calls this 'Vertical Height Left' */
-    PA_CHANNEL_POSITION_TOP_FRONT_RIGHT,          /* Apple calls this 'Vertical Height Right' */
-    PA_CHANNEL_POSITION_TOP_FRONT_CENTER,         /* Apple calls this 'Vertical Height Center' */
+    PA_CHANNEL_POSITION_TOP_FRONT_LEFT,           /**< Apple calls this 'Vertical Height Left' */
+    PA_CHANNEL_POSITION_TOP_FRONT_RIGHT,          /**< Apple calls this 'Vertical Height Right' */
+    PA_CHANNEL_POSITION_TOP_FRONT_CENTER,         /**< Apple calls this 'Vertical Height Center' */
 
-    PA_CHANNEL_POSITION_TOP_REAR_LEFT,            /* Microsoft and Apple call this 'Top Back Left' */
-    PA_CHANNEL_POSITION_TOP_REAR_RIGHT,           /* Microsoft and Apple call this 'Top Back Right' */
-    PA_CHANNEL_POSITION_TOP_REAR_CENTER,          /* Microsoft and Apple call this 'Top Back Center' */
+    PA_CHANNEL_POSITION_TOP_REAR_LEFT,            /**< Microsoft and Apple call this 'Top Back Left' */
+    PA_CHANNEL_POSITION_TOP_REAR_RIGHT,           /**< Microsoft and Apple call this 'Top Back Right' */
+    PA_CHANNEL_POSITION_TOP_REAR_CENTER,          /**< Microsoft and Apple call this 'Top Back Center' */
 
     PA_CHANNEL_POSITION_MAX
 } pa_channel_position_t;
@@ -328,23 +331,23 @@ int pa_channel_map_compatible(const pa_channel_map *map, const pa_sample_spec *s
 int pa_channel_map_superset(const pa_channel_map *a, const pa_channel_map *b) PA_GCC_PURE;
 
 /** Returns non-zero if it makes sense to apply a volume 'balance'
- * with this mapping, i.e. if there are left/right channels
+ * with this mapping, i.e.\ if there are left/right channels
  * available. \since 0.9.15 */
 int pa_channel_map_can_balance(const pa_channel_map *map) PA_GCC_PURE;
 
 /** Returns non-zero if it makes sense to apply a volume 'fade'
- * (i.e. 'balance' between front and rear) with this mapping, i.e. if
+ * (i.e.\ 'balance' between front and rear) with this mapping, i.e.\ if
  * there are front/rear channels available. \since 0.9.15 */
 int pa_channel_map_can_fade(const pa_channel_map *map) PA_GCC_PURE;
 
 /** Tries to find a well-known channel mapping name for this channel
- * mapping. I.e. "stereo", "surround-71" and so on. If the channel
+ * mapping, i.e.\ "stereo", "surround-71" and so on. If the channel
  * mapping is unknown NULL will be returned. This name can be parsed
  * with pa_channel_map_parse() \since 0.9.15 */
 const char* pa_channel_map_to_name(const pa_channel_map *map) PA_GCC_PURE;
 
 /** Tries to find a human readable text label for this channel
-mapping. I.e. "Stereo", "Surround 7.1" and so on. If the channel
+mapping, i.e.\ "Stereo", "Surround 7.1" and so on. If the channel
 mapping is unknown NULL will be returned. \since 0.9.15 */
 const char* pa_channel_map_to_pretty_name(const pa_channel_map *map) PA_GCC_PURE;
 

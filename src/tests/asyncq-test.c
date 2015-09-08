@@ -25,12 +25,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <check.h>
+
 #include <pulse/util.h>
-#include <pulse/xmalloc.h>
 #include <pulsecore/asyncq.h>
 #include <pulsecore/thread.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-util.h>
 #include <pulsecore/macro.h>
 
 static void producer(void *_q) {
@@ -38,12 +38,12 @@ static void producer(void *_q) {
     int i;
 
     for (i = 0; i < 1000; i++) {
-        printf("pushing %i\n", i);
+        pa_log_debug("pushing %i", i);
         pa_asyncq_push(q, PA_UINT_TO_PTR(i+1), 1);
     }
 
     pa_asyncq_push(q, PA_UINT_TO_PTR(-1), TRUE);
-    printf("pushed end\n");
+    pa_log_debug("pushed end");
 }
 
 static void consumer(void *_q) {
@@ -51,7 +51,7 @@ static void consumer(void *_q) {
     void *p;
     int i;
 
-    sleep(1);
+    pa_msleep(1000);
 
     for (i = 0;; i++) {
         p = pa_asyncq_pop(q, TRUE);
@@ -59,27 +59,51 @@ static void consumer(void *_q) {
         if (p == PA_UINT_TO_PTR(-1))
             break;
 
-        pa_assert(p == PA_UINT_TO_PTR(i+1));
+        fail_unless(p == PA_UINT_TO_PTR(i+1));
 
-        printf("popped %i\n", i);
+        pa_log_debug("popped %i", i);
     }
 
-    printf("popped end\n");
+    pa_log_debug("popped end");
 }
 
-int main(int argc, char *argv[]) {
+START_TEST (asyncq_test) {
     pa_asyncq *q;
     pa_thread *t1, *t2;
 
-    pa_assert_se(q = pa_asyncq_new(0));
+    if (!getenv("MAKE_CHECK"))
+        pa_log_set_level(PA_LOG_DEBUG);
 
-    pa_assert_se(t1 = pa_thread_new(producer, q));
-    pa_assert_se(t2 = pa_thread_new(consumer, q));
+    q = pa_asyncq_new(0);
+    fail_unless(q != NULL);
+
+    t1 = pa_thread_new("producer", producer, q);
+    fail_unless(t1 != NULL);
+    t2 = pa_thread_new("consumer", consumer, q);
+    fail_unless(t2 != NULL);
 
     pa_thread_free(t1);
     pa_thread_free(t2);
 
     pa_asyncq_free(q, NULL);
+}
+END_TEST
 
-    return 0;
+int main(int argc, char *argv[]) {
+    int failed = 0;
+    Suite *s;
+    TCase *tc;
+    SRunner *sr;
+
+    s = suite_create("Async Queue");
+    tc = tcase_create("asyncq");
+    tcase_add_test(tc, asyncq_test);
+    suite_add_tcase(s, tc);
+
+    sr = srunner_create(s);
+    srunner_run_all(sr, CK_NORMAL);
+    failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+
+    return (failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -31,27 +31,21 @@
 #include <signal.h>
 #include <stdio.h>
 
-#ifdef HAVE_POLL_H
-#include <poll.h>
-#else
-#include <pulsecore/poll.h>
-#endif
-
 #include <pulse/xmalloc.h>
 #include <pulse/mainloop.h>
-#include <pulse/i18n.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/log.h>
-#include <pulsecore/hashmap.h>
 #include <pulsecore/thread.h>
 #include <pulsecore/mutex.h>
 #include <pulsecore/macro.h>
+#include <pulsecore/poll.h>
 
 #include "thread-mainloop.h"
 
 struct pa_threaded_mainloop {
     pa_mainloop *real_mainloop;
-    int n_waiting, n_waiting_for_accept;
+    volatile int n_waiting, n_waiting_for_accept;
 
     pa_thread* thread;
     pa_mutex* mutex;
@@ -72,7 +66,7 @@ static int poll_func(struct pollfd *ufds, unsigned long nfds, int timeout, void 
      * avahi_simple_poll_quit() can succeed from another thread. */
 
     pa_mutex_unlock(mutex);
-    r = poll(ufds, nfds, timeout);
+    r = pa_poll(ufds, nfds, timeout);
     pa_mutex_lock(mutex);
 
     return r;
@@ -116,6 +110,7 @@ pa_threaded_mainloop *pa_threaded_mainloop_new(void) {
     pa_mainloop_set_poll_func(m->real_mainloop, poll_func, m->mutex);
 
     m->n_waiting = 0;
+    m->n_waiting_for_accept = 0;
 
     return m;
 }
@@ -145,7 +140,7 @@ int pa_threaded_mainloop_start(pa_threaded_mainloop *m) {
 
     pa_assert(!m->thread || !pa_thread_is_running(m->thread));
 
-    if (!(m->thread = pa_thread_new(thread, m)))
+    if (!(m->thread = pa_thread_new("threaded-ml", thread, m)))
         return -1;
 
     return 0;
@@ -185,6 +180,7 @@ void pa_threaded_mainloop_unlock(pa_threaded_mainloop *m) {
     pa_mutex_unlock(m->mutex);
 }
 
+/* Called with the lock taken */
 void pa_threaded_mainloop_signal(pa_threaded_mainloop *m, int wait_for_accept) {
     pa_assert(m);
 
@@ -198,6 +194,7 @@ void pa_threaded_mainloop_signal(pa_threaded_mainloop *m, int wait_for_accept) {
     }
 }
 
+/* Called with the lock taken */
 void pa_threaded_mainloop_wait(pa_threaded_mainloop *m) {
     pa_assert(m);
 
@@ -212,6 +209,7 @@ void pa_threaded_mainloop_wait(pa_threaded_mainloop *m) {
     m->n_waiting --;
 }
 
+/* Called with the lock taken */
 void pa_threaded_mainloop_accept(pa_threaded_mainloop *m) {
     pa_assert(m);
 

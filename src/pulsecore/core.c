@@ -33,14 +33,10 @@
 #include <pulse/xmalloc.h>
 
 #include <pulsecore/module.h>
-#include <pulsecore/sink.h>
-#include <pulsecore/source.h>
-#include <pulsecore/namereg.h>
 #include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/core-scache.h>
 #include <pulsecore/core-subscribe.h>
-#include <pulsecore/shared.h>
 #include <pulsecore/random.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
@@ -117,6 +113,9 @@ pa_core* pa_core_new(pa_mainloop_api *m, pa_bool_t shared, size_t shm_size) {
     c->default_n_fragments = 4;
     c->default_fragment_size_msec = 25;
 
+    c->deferred_volume_safety_margin_usec = 8000;
+    c->deferred_volume_extra_delay_usec = 0;
+
     c->module_defer_unload_event = NULL;
     c->scache_auto_unload_event = NULL;
 
@@ -141,7 +140,8 @@ pa_core* pa_core_new(pa_mainloop_api *m, pa_bool_t shared, size_t shm_size) {
     c->realtime_priority = 5;
     c->disable_remixing = FALSE;
     c->disable_lfe_remixing = FALSE;
-    c->resample_method = PA_RESAMPLER_SPEEX_FLOAT_BASE + 3;
+    c->deferred_volume = TRUE;
+    c->resample_method = PA_RESAMPLER_SPEEX_FLOAT_BASE + 1;
 
     for (j = 0; j < PA_CORE_HOOK_MAX; j++)
         pa_hook_init(&c->hooks[j], c);
@@ -153,6 +153,13 @@ pa_core* pa_core_new(pa_mainloop_api *m, pa_bool_t shared, size_t shm_size) {
 #endif
 
     pa_core_check_idle(c);
+
+#ifdef __TIZEN__
+    c->dump_sink = FALSE;
+    c->dump_sink_input = FALSE;
+    c->dump_source = FALSE;
+    c->dump_source_output = FALSE;
+#endif
 
     c->state = PA_CORE_RUNNING;
 
@@ -166,38 +173,38 @@ static void core_free(pa_object *o) {
 
     c->state = PA_CORE_SHUTDOWN;
 
-    pa_module_unload_all(c);
-    pa_scache_free_all(c);
+    /* Note: All modules and samples in the cache should be unloaded before
+     * we get here */
 
     pa_assert(pa_idxset_isempty(c->scache));
-    pa_idxset_free(c->scache, NULL, NULL);
+    pa_idxset_free(c->scache, NULL);
 
     pa_assert(pa_idxset_isempty(c->modules));
-    pa_idxset_free(c->modules, NULL, NULL);
+    pa_idxset_free(c->modules, NULL);
 
     pa_assert(pa_idxset_isempty(c->clients));
-    pa_idxset_free(c->clients, NULL, NULL);
+    pa_idxset_free(c->clients, NULL);
 
     pa_assert(pa_idxset_isempty(c->cards));
-    pa_idxset_free(c->cards, NULL, NULL);
+    pa_idxset_free(c->cards, NULL);
 
     pa_assert(pa_idxset_isempty(c->sinks));
-    pa_idxset_free(c->sinks, NULL, NULL);
+    pa_idxset_free(c->sinks, NULL);
 
     pa_assert(pa_idxset_isempty(c->sources));
-    pa_idxset_free(c->sources, NULL, NULL);
+    pa_idxset_free(c->sources, NULL);
 
     pa_assert(pa_idxset_isempty(c->source_outputs));
-    pa_idxset_free(c->source_outputs, NULL, NULL);
+    pa_idxset_free(c->source_outputs, NULL);
 
     pa_assert(pa_idxset_isempty(c->sink_inputs));
-    pa_idxset_free(c->sink_inputs, NULL, NULL);
+    pa_idxset_free(c->sink_inputs, NULL);
 
     pa_assert(pa_hashmap_isempty(c->namereg));
-    pa_hashmap_free(c->namereg, NULL, NULL);
+    pa_hashmap_free(c->namereg, NULL);
 
     pa_assert(pa_hashmap_isempty(c->shared));
-    pa_hashmap_free(c->shared, NULL, NULL);
+    pa_hashmap_free(c->shared, NULL);
 
     pa_subscription_free_all(c);
 
@@ -252,12 +259,27 @@ int pa_core_exit(pa_core *c, pa_bool_t force, int retval) {
 void pa_core_maybe_vacuum(pa_core *c) {
     pa_assert(c);
 
-    if (!pa_idxset_isempty(c->sink_inputs) ||
-        !pa_idxset_isempty(c->source_outputs))
-        return;
+    if (pa_idxset_isempty(c->sink_inputs) && pa_idxset_isempty(c->source_outputs)) {
+        pa_log_debug_verbose("Hmm, no streams around, trying to vacuum.");
+        pa_mempool_vacuum(c->mempool);
+    } else {
+        pa_sink *si;
+        pa_source *so;
+        uint32_t idx;
 
-    pa_log_debug("Hmm, no streams around, trying to vacuum.");
-    pa_mempool_vacuum(c->mempool);
+        idx = 0;
+        PA_IDXSET_FOREACH(si, c->sinks, idx)
+            if (pa_sink_get_state(si) != PA_SINK_SUSPENDED)
+                return;
+
+        idx = 0;
+        PA_IDXSET_FOREACH(so, c->sources, idx)
+            if (pa_source_get_state(so) != PA_SOURCE_SUSPENDED)
+                return;
+
+        pa_log_info("All sinks and sources are suspended, vacuuming memory");
+        pa_mempool_vacuum(c->mempool);
+    }
 }
 
 pa_time_event* pa_core_rttime_new(pa_core *c, pa_usec_t usec, pa_time_event_cb_t cb, void *userdata) {

@@ -28,7 +28,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 
 #include <pulse/rtclock.h>
 #include <pulse/sample.h>
@@ -46,7 +45,6 @@
 #include <pulsecore/source.h>
 #include <pulsecore/core-scache.h>
 #include <pulsecore/sample-util.h>
-#include <pulsecore/authkey.h>
 #include <pulsecore/namereg.h>
 #include <pulsecore/log.h>
 #include <pulsecore/core-util.h>
@@ -55,8 +53,7 @@
 #include <pulsecore/macro.h>
 #include <pulsecore/thread-mq.h>
 #include <pulsecore/shared.h>
-
-#include "endianmacros.h"
+#include <pulsecore/endianmacros.h>
 
 #include "protocol-esound.h"
 
@@ -328,12 +325,12 @@ static int format_native2esd(pa_sample_spec *ss) {
     return format;
 }
 
-#define CHECK_VALIDITY(expression, ...) do { \
-    if (!(expression)) { \
-        pa_log_warn(__FILE__ ": " __VA_ARGS__); \
-        return -1; \
-    } \
-} while(0);
+#define CHECK_VALIDITY(expression, ...) do {            \
+        if (PA_UNLIKELY(!(expression))) {               \
+            pa_log_warn(__FILE__ ": " __VA_ARGS__);     \
+            return -1;                                  \
+        }                                               \
+    } while(0);
 
 /*** esound commands ***/
 
@@ -389,6 +386,7 @@ static int esd_proto_stream_play(connection *c, esd_proto_t request, const void 
     size_t l;
     pa_sink *sink = NULL;
     pa_sink_input_new_data sdata;
+    pa_memchunk silence;
 
     connection_assert_ref(c);
     pa_assert(data);
@@ -426,7 +424,8 @@ static int esd_proto_stream_play(connection *c, esd_proto_t request, const void 
     sdata.driver = __FILE__;
     sdata.module = c->options->module;
     sdata.client = c->client;
-    sdata.sink = sink;
+    if (sink)
+        pa_sink_input_new_data_set_sink(&sdata, sink, FALSE);
     pa_sink_input_new_data_set_sample_spec(&sdata, &ss);
 
     pa_sink_input_new(&c->sink_input, c->protocol->core, &sdata);
@@ -435,15 +434,18 @@ static int esd_proto_stream_play(connection *c, esd_proto_t request, const void 
     CHECK_VALIDITY(c->sink_input, "Failed to create sink input.");
 
     l = (size_t) ((double) pa_bytes_per_second(&ss)*PLAYBACK_BUFFER_SECONDS);
+    pa_sink_input_get_silence(c->sink_input, &silence);
     c->input_memblockq = pa_memblockq_new(
+            "esound protocol connection input_memblockq",
             0,
             l,
             l,
-            pa_frame_size(&ss),
+            &ss,
             (size_t) -1,
             l/PLAYBACK_BUFFER_FRAGMENTS,
             0,
-            NULL);
+            &silence);
+    pa_memblock_unref(silence.memblock);
     pa_iochannel_socket_set_rcvbuf(c->io, l);
 
     c->sink_input->parent.process_msg = sink_input_process_msg;
@@ -459,7 +461,7 @@ static int esd_proto_stream_play(connection *c, esd_proto_t request, const void 
 
     c->protocol->n_player++;
 
-    pa_atomic_store(&c->playback.missing, (int) pa_memblockq_missing(c->input_memblockq));
+    pa_atomic_store(&c->playback.missing, (int) pa_memblockq_pop_missing(c->input_memblockq));
 
     pa_sink_input_put(c->sink_input);
 
@@ -522,7 +524,8 @@ static int esd_proto_stream_record(connection *c, esd_proto_t request, const voi
     sdata.driver = __FILE__;
     sdata.module = c->options->module;
     sdata.client = c->client;
-    sdata.source = source;
+    if (source)
+        pa_source_output_new_data_set_source(&sdata, source, FALSE);
     pa_source_output_new_data_set_sample_spec(&sdata, &ss);
 
     pa_source_output_new(&c->source_output, c->protocol->core, &sdata);
@@ -532,10 +535,11 @@ static int esd_proto_stream_record(connection *c, esd_proto_t request, const voi
 
     l = (size_t) (pa_bytes_per_second(&ss)*RECORD_BUFFER_SECONDS);
     c->output_memblockq = pa_memblockq_new(
+            "esound protocol connection output_memblockq",
             0,
             l,
             l,
-            pa_frame_size(&ss),
+            &ss,
             1,
             0,
             0,
@@ -628,7 +632,7 @@ static int esd_proto_all_info(connection *c, esd_proto_t request, const void *da
 
     memset(terminator, 0, sizeof(terminator));
 
-    for (conn = pa_idxset_first(c->protocol->connections, &idx); conn; conn = pa_idxset_next(c->protocol->connections, &idx)) {
+    PA_IDXSET_FOREACH(conn, c->protocol->connections, idx) {
         int32_t id, format = ESD_BITS16 | ESD_STEREO, rate = 44100, lvolume = ESD_VOLUME_BASE, rvolume = ESD_VOLUME_BASE;
         char name[ESD_NAME_MAX];
 
@@ -686,7 +690,8 @@ static int esd_proto_all_info(connection *c, esd_proto_t request, const void *da
         pa_scache_entry *ce;
 
         idx = PA_IDXSET_INVALID;
-        for (ce = pa_idxset_first(c->protocol->core->scache, &idx); ce; ce = pa_idxset_next(c->protocol->core->scache, &idx)) {
+
+        PA_IDXSET_FOREACH(ce, c->protocol->core->scache, idx) {
             int32_t id, rate, lvolume, rvolume, format, len;
             char name[ESD_NAME_MAX];
             pa_channel_map stereo = { .channels = 2, .map = { PA_CHANNEL_POSITION_LEFT, PA_CHANNEL_POSITION_RIGHT } };
@@ -944,11 +949,16 @@ static int esd_proto_standby_or_resume(connection *c, esd_proto_t request, const
     connection_write_prepare(c, sizeof(int32_t) * 2);
     connection_write(c, &ok, sizeof(int32_t));
 
-    if (request == ESD_PROTO_STANDBY)
-        ok = pa_sink_suspend_all(c->protocol->core, TRUE, PA_SUSPEND_USER) >= 0;
-    else {
+    pa_log_debug("%s of all sinks and sources requested by client %" PRIu32 ".",
+                 request == ESD_PROTO_STANDBY ? "Suspending" : "Resuming", c->client->index);
+
+    if (request == ESD_PROTO_STANDBY) {
+        ok = pa_sink_suspend_all(c->protocol->core, true, PA_SUSPEND_USER) >= 0;
+        ok &= pa_source_suspend_all(c->protocol->core, true, PA_SUSPEND_USER) >= 0;
+    } else {
         pa_assert(request == ESD_PROTO_RESUME);
-        ok = pa_sink_suspend_all(c->protocol->core, FALSE, PA_SUSPEND_USER) >= 0;
+        ok = pa_sink_suspend_all(c->protocol->core, false, PA_SUSPEND_USER) >= 0;
+        ok &= pa_source_suspend_all(c->protocol->core, false, PA_SUSPEND_USER) >= 0;
     }
 
     connection_write(c, &ok, sizeof(int32_t));
@@ -1016,7 +1026,7 @@ static int do_read(connection *c) {
             c->request = PA_MAYBE_INT32_SWAP(c->swap_byte_order, c->request);
 
             if (c->request < ESD_PROTO_CONNECT || c->request >= ESD_PROTO_MAX) {
-                pa_log("recieved invalid request.");
+                pa_log("received invalid request.");
                 return -1;
             }
 
@@ -1025,7 +1035,7 @@ static int do_read(connection *c) {
 /*             pa_log("executing request #%u", c->request); */
 
             if (!handler->proc) {
-                pa_log("recieved unimplemented request #%u.", c->request);
+                pa_log("received unimplemented request #%u.", c->request);
                 return -1;
             }
 
@@ -1127,7 +1137,7 @@ static int do_read(connection *c) {
 
 /*         pa_log("STREAMING_DATA"); */
 
-        if (!(l = (size_t) pa_atomic_load(&c->playback.missing)))
+        if ((l = (size_t) pa_atomic_load(&c->playback.missing)) <= 0)
             return 0;
 
         if (c->playback.current_memblock) {
@@ -1169,8 +1179,8 @@ static int do_read(connection *c) {
 
         c->playback.memblock_index += (size_t) r;
 
-        pa_asyncmsgq_post(c->sink_input->sink->asyncmsgq, PA_MSGOBJECT(c->sink_input), SINK_INPUT_MESSAGE_POST_DATA, NULL, 0, &chunk, NULL);
         pa_atomic_sub(&c->playback.missing, (int) r);
+        pa_asyncmsgq_post(c->sink_input->sink->asyncmsgq, PA_MSGOBJECT(c->sink_input), SINK_INPUT_MESSAGE_POST_DATA, NULL, 0, &chunk, NULL);
     }
 
     return 0;
@@ -1378,10 +1388,9 @@ static int sink_input_pop_cb(pa_sink_input *i, size_t length, pa_memchunk *chunk
     } else {
         size_t m;
 
-        chunk->length = PA_MIN(length, chunk->length);
-
         c->playback.underrun = FALSE;
 
+        chunk->length = PA_MIN(length, chunk->length);
         pa_memblockq_drop(c->input_memblockq, chunk->length);
         m = pa_memblockq_pop_missing(c->input_memblockq);
 
@@ -1618,7 +1627,7 @@ void pa_esound_protocol_unref(pa_esound_protocol *p) {
     while ((c = pa_idxset_first(p->connections, NULL)))
         connection_unlink(c);
 
-    pa_idxset_free(p->connections, NULL, NULL);
+    pa_idxset_free(p->connections, NULL);
 
     pa_assert_se(pa_shared_remove(p->core, "esound-protocol") >= 0);
 
@@ -1707,7 +1716,7 @@ int pa_esound_options_parse(pa_esound_options *o, pa_core *c, pa_modargs *ma) {
             if (!(cn = pa_modargs_get_value(ma, "cookie", NULL)))
                 cn = DEFAULT_COOKIE_FILE;
 
-        if (!(o->auth_cookie = pa_auth_cookie_get(c, cn, ESD_KEY_LEN)))
+        if (!(o->auth_cookie = pa_auth_cookie_get(c, cn, TRUE, ESD_KEY_LEN)))
             return -1;
 
     } else

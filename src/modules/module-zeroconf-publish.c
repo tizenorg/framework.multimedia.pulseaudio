@@ -25,7 +25,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 
 #include <avahi-client/client.h>
@@ -43,11 +42,9 @@
 #include <pulsecore/native-common.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-subscribe.h>
 #include <pulsecore/dynarray.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/avahi-wrap.h>
-#include <pulsecore/endianmacros.h>
 #include <pulsecore/protocol-native.h>
 
 #include "module-zeroconf-publish-symdef.h"
@@ -329,8 +326,10 @@ static int publish_service(struct service *s) {
 finish:
 
     /* Remove this service */
-    if (r < 0)
+    if (r < 0) {
+        pa_hashmap_remove(s->userdata->services, s->device);
         service_free(s);
+    }
 
     avahi_string_list_free(txt);
 
@@ -377,8 +376,6 @@ static struct service *get_service(struct userdata *u, pa_object *device) {
 static void service_free(struct service *s) {
     pa_assert(s);
 
-    pa_hashmap_remove(s->userdata->services, s->device);
-
     if (s->entry_group) {
         pa_log_debug("Removing entry group for %s.", s->service_name);
         avahi_entry_group_free(s->entry_group);
@@ -416,7 +413,7 @@ static pa_hook_result_t device_unlink_cb(pa_core *c, pa_object *o, struct userda
     pa_assert(c);
     pa_object_assert_ref(o);
 
-    if ((s = pa_hashmap_get(u->services, o)))
+    if ((s = pa_hashmap_remove(u->services, o)))
         service_free(s);
 
     return PA_HOOK_OK;
@@ -664,14 +661,8 @@ void pa__done(pa_module*m) {
     if (!(u = m->userdata))
         return;
 
-    if (u->services) {
-        struct service *s;
-
-        while ((s = pa_hashmap_first(u->services)))
-            service_free(s);
-
-        pa_hashmap_free(u->services, NULL, NULL);
-    }
+    if (u->services)
+        pa_hashmap_free(u->services, (pa_free_cb_t) service_free);
 
     if (u->sink_new_slot)
         pa_hook_slot_free(u->sink_new_slot);

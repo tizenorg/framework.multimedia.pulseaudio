@@ -3,6 +3,8 @@ src/modules/module-tunnel.c
 src/modules/module-native-protocol-fd.c
 src/modules/module-zeroconf-discover.c
 src/modules/alsa/module-alsa-source.c
+src/modules/bluetooth/module-bluez4-device.c
+src/modules/bluetooth/module-bluez5-device.c
 src/modules/module-device-restore.c
 src/modules/module-match.c
 src/pulsecore/dbus-util.c
@@ -17,11 +19,10 @@ src/modules/module-solaris.c
 src/modules/module-default-device-restore.c
 src/modules/x11/module-x11-xsmp.c
 src/modules/module-remap-sink.c
-src/modules/bluetooth/module-bluetooth-proximity.c
+#src/modules/bluetooth/module-bluetooth-proximity.c
 src/modules/module-detect.c
 src/modules/module-always-sink.c
 src/modules/module-lirc.c
-src/modules/module-hal-detect.c
 src/modules/module-sine.c
 src/modules/module-zeroconf-publish.c
 src/modules/jack/module-jack-source.c
@@ -39,7 +40,7 @@ src/modules/module-esound-compat-spawnfd.c
 src/modules/module-esound-compat-spawnpid.c
 #src/modules/module-waveout.c
 src/modules/module-combine.c
-src/modules/bluetooth/proximity-helper.c
+#src/modules/bluetooth/proximity-helper.c
 src/modules/x11/module-x11-publish.c
 src/modules/rtp/module-rtp-recv.c
 src/modules/rtp/sdp.c
@@ -84,7 +85,6 @@ src/pulsecore/socket-client.c
 src/pulsecore/idxset.c
 src/pulsecore/pipe.c
 src/pulsecore/asyncmsgq.c
-src/pulsecore/inet_pton.c
 src/pulsecore/socket-util.c
 src/pulsecore/object.c
 src/pulsecore/sioman.c
@@ -93,7 +93,6 @@ src/pulsecore/x11prop.c
 src/pulsecore/sconv-s16be.c
 src/pulsecore/thread-posix.c
 src/pulsecore/client.c
-src/pulsecore/inet_ntop.c
 src/pulsecore/strlist.c
 src/pulsecore/msgobject.c
 src/pulsecore/mutex-win32.c
@@ -109,7 +108,6 @@ src/pulsecore/core-error.c
 src/pulsecore/strbuf.c
 src/pulsecore/play-memblockq.c
 src/pulsecore/dllmain.c
-src/pulsecore/envelope.c
 src/pulsecore/pid.c
 src/pulsecore/thread-mq.c
 src/pulsecore/shm.c
@@ -118,7 +116,8 @@ src/pulsecore/hashmap.c
 src/pulsecore/avahi-wrap.c
 src/pulsecore/authkey.c
 src/pulsecore/namereg.c
-src/pulsecore/poll.c
+src/pulsecore/poll-posix.c
+src/pulsecore/poll-win32.c
 src/pulsecore/tokenizer.c
 src/pulsecore/semaphore-posix.c
 src/pulsecore/cli-text.c
@@ -145,6 +144,7 @@ src/pulsecore/sound-file-stream.c
 src/pulsecore/memblockq.c
 src/pulsecore/protocol-http.c
 src/pulsecore/semaphore-win32.c
+src/pulsecore/i18n.c
 src/daemon/cpulimit.c
 src/daemon/ltdl-bind-now.c
 src/daemon/main.c
@@ -153,20 +153,19 @@ src/daemon/dumpmodules.c
 src/daemon/daemon-conf.c
 src/daemon/caps.c
 src/daemon/pulseaudio.desktop.in
+src/daemon/pulseaudio-kde.desktop.in
 src/pulse/channelmap.c
 src/pulse/error.c
 src/pulse/proplist.c
 src/pulse/xmalloc.c
 src/pulse/ext-stream-restore.c
 src/pulse/stream.c
-src/pulse/i18n.c
 src/pulse/util.c
 src/pulse/utf8.c
 src/pulse/mainloop-api.c
 src/pulse/sample.c
 src/pulse/client-conf-x11.c
 src/pulse/client-conf.c
-src/pulse/browser.c
 src/pulse/volume.c
 src/pulse/simple.c
 src/pulse/subscribe.c
@@ -179,9 +178,9 @@ src/pulse/thread-mainloop.c
 src/pulse/scache.c
 src/pulse/glib-mainloop.c
 src/pulse/timeval.c
+src/pulse/format.c
 src/utils/pacat.c
 src/utils/pasuspender.c
-src/utils/pabrowse.c
 src/utils/pactl.c
 src/utils/padsp.c
 src/utils/pax11publish.c
@@ -194,3 +193,9 @@ src/modules/bluetooth/module-bluetooth-device.c
 src/modules/reserve-wrap.c
 src/modules/module-rygel-media-server.c
 src/modules/alsa/alsa-mixer.c
+src/modules/echo-cancel/module-echo-cancel.c
+src/modules/module-equalizer-sink.c
+src/modules/module-filter-apply.c
+src/tests/resampler-test.c
+src/modules/module-virtual-surround-sink.c
+src/modules/macosx/module-coreaudio-device.c

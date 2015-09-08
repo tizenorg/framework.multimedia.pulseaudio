@@ -24,12 +24,11 @@
 #endif
 
 #include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/volume.h>
-#include <pulse/channelmap.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
@@ -79,19 +78,15 @@ static void rule_free(struct rule *r) {
     pa_xfree(r);
 }
 
-static int parse_properties(
-        const char *filename,
-        unsigned line,
-        const char *section,
-        const char *lvalue,
-        const char *rvalue,
-        void *data,
-        void *userdata) {
-
-    struct rule *r = userdata;
+static int parse_properties(pa_config_parser_state *state) {
+    struct rule *r;
     pa_proplist *n;
 
-    if (!(n = pa_proplist_from_string(rvalue)))
+    pa_assert(state);
+
+    r = state->userdata;
+
+    if (!(n = pa_proplist_from_string(state->rvalue)))
         return -1;
 
     if (r->proplist) {
@@ -103,20 +98,16 @@ static int parse_properties(
     return 0;
 }
 
-static int parse_categories(
-        const char *filename,
-        unsigned line,
-        const char *section,
-        const char *lvalue,
-        const char *rvalue,
-        void *data,
-        void *userdata) {
-
-    struct rule *r = userdata;
-    const char *state = NULL;
+static int parse_categories(pa_config_parser_state *state) {
+    struct rule *r;
+    const char *split_state = NULL;
     char *c;
 
-    while ((c = pa_split(rvalue, ";", &state))) {
+    pa_assert(state);
+
+    r = state->userdata;
+
+    while ((c = pa_split(state->rvalue, ";", &split_state))) {
 
         if (pa_streq(c, "Game")) {
             pa_xfree(r->role);
@@ -132,27 +123,13 @@ static int parse_categories(
     return 0;
 }
 
-static int check_type(
-        const char *filename,
-        unsigned line,
-        const char *section,
-        const char *lvalue,
-        const char *rvalue,
-        void *data,
-        void *userdata) {
+static int check_type(pa_config_parser_state *state) {
+    pa_assert(state);
 
-    return pa_streq(rvalue, "Application") ? 0 : -1;
+    return pa_streq(state->rvalue, "Application") ? 0 : -1;
 }
 
-static int catch_all(
-        const char *filename,
-        unsigned line,
-        const char *section,
-        const char *lvalue,
-        const char *rvalue,
-        void *data,
-        void *userdata) {
-
+static int catch_all(pa_config_parser_state *state) {
     return 0;
 }
 
@@ -168,20 +145,54 @@ static void update_rule(struct rule *r) {
         { NULL,  catch_all, NULL, NULL },
         { NULL, NULL, NULL, NULL },
     };
+    pa_bool_t found = FALSE;
 
     pa_assert(r);
     fn = pa_sprintf_malloc(DESKTOPFILEDIR PA_PATH_SEP "%s.desktop", r->process_name);
 
-    if (stat(fn, &st) < 0) {
+    if (stat(fn, &st) == 0)
+        found = TRUE;
+    else {
+#ifdef DT_DIR
+        DIR *desktopfiles_dir;
+        struct dirent *dir;
+
+        /* Let's try a more aggressive search, but only one level */
+        if ((desktopfiles_dir = opendir(DESKTOPFILEDIR))) {
+            while ((dir = readdir(desktopfiles_dir))) {
+                if (dir->d_type != DT_DIR
+                    || pa_streq(dir->d_name, ".")
+                    || pa_streq(dir->d_name, ".."))
+                    continue;
+
+                pa_xfree(fn);
+                fn = pa_sprintf_malloc(DESKTOPFILEDIR PA_PATH_SEP "%s" PA_PATH_SEP "%s.desktop", dir->d_name, r->process_name);
+
+                if (stat(fn, &st) == 0) {
+                    found = TRUE;
+                    break;
+                }
+            }
+            closedir(desktopfiles_dir);
+        }
+#endif
+    }
+    if (!found) {
         r->good = FALSE;
         pa_xfree(fn);
         return;
     }
 
-    if (r->good && st.st_mtime == r->mtime) {
-        pa_xfree(fn);
-        return;
-    }
+    if (r->good) {
+        if (st.st_mtime == r->mtime) {
+            /* Theoretically the filename could have changed, but if so
+               having the same mtime is very unlikely so not worth tracking it in r */
+            pa_xfree(fn);
+            return;
+        }
+        pa_log_debug("Found %s (which has been updated since we last checked).", fn);
+    } else
+        pa_log_debug("Found %s.", fn);
 
     r->good = TRUE;
     r->mtime = st.st_mtime;
@@ -195,7 +206,7 @@ static void update_rule(struct rule *r) {
     table[0].data = &r->application_name;
     table[1].data = &r->icon_name;
 
-    if (pa_config_parse(fn, NULL, table, r) < 0)
+    if (pa_config_parse(fn, NULL, table, NULL, r) < 0)
         pa_log_warn("Failed to parse .desktop file %s.", fn);
 
     pa_xfree(fn);
@@ -320,7 +331,7 @@ fail:
     if (ma)
         pa_modargs_free(ma);
 
-    return  -1;
+    return -1;
 }
 
 void pa__done(pa_module *m) {
@@ -336,14 +347,8 @@ void pa__done(pa_module *m) {
     if (u->client_proplist_changed_slot)
         pa_hook_slot_free(u->client_proplist_changed_slot);
 
-    if (u->cache) {
-        struct rule *r;
-
-        while ((r = pa_hashmap_steal_first(u->cache)))
-            rule_free(r);
-
-        pa_hashmap_free(u->cache, NULL, NULL);
-    }
+    if (u->cache)
+        pa_hashmap_free(u->cache, (pa_free_cb_t) rule_free);
 
     pa_xfree(u);
 }

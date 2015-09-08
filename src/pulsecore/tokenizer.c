@@ -27,16 +27,11 @@
 #include <stdlib.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/gccmacro.h>
 
 #include <pulsecore/dynarray.h>
 #include <pulsecore/macro.h>
 
 #include "tokenizer.h"
-
-static void token_free(void *p, void *userdata) {
-    pa_xfree(p);
-}
 
 static void parse(pa_dynarray*a, const char *s, unsigned args) {
     int infty = 0;
@@ -77,7 +72,7 @@ void pa_tokenizer_free(pa_tokenizer *t) {
     pa_dynarray *a = (pa_dynarray*) t;
 
     pa_assert(a);
-    pa_dynarray_free(a, token_free, NULL);
+    pa_dynarray_free(a, pa_xfree);
 }
 
 const char *pa_tokenizer_get(pa_tokenizer *t, unsigned i) {

@@ -187,16 +187,14 @@ int64_t __gettime(void)
 
 #define PRELOAD_FILTER
 
-AVResampleContext *av_resample_init(int out_rate, int in_rate, int filter_size, int phase_shift, int linear, double cutoff)
-{
+AVResampleContext *av_resample_init(int out_rate, int in_rate, int filter_size, int phase_shift, int linear, double cutoff){
 #ifdef DEBUG_MODE
 	int64_t start = __gettime ();
-	printf("[%s][%d] out=%d, in=%d, filter_size=%d, phase_shift=%d, linear=%d, cutoff=%f\n", __func__, __LINE__,
+	printf("out=%d, in=%d, filter_size=%d, phase_shift=%d, linear=%d, cutoff=%f\n",
 			out_rate, in_rate, filter_size, phase_shift, linear, cutoff);
 #endif
     AVResampleContext *c= av_mallocz(sizeof(AVResampleContext));
     double factor= FFMIN(out_rate * cutoff / in_rate, 1.0);
-
     int phase_count= 1<<phase_shift;
 
     c->phase_shift= phase_shift;
@@ -260,7 +258,7 @@ AVResampleContext *av_resample_init(int out_rate, int in_rate, int filter_size, 
     c->index= -phase_count*((c->filter_length-1)/2);
 
 #ifdef DEBUG_MODE
-    printf("[%s][%d] elapsed = %lld\n", __func__, __LINE__, __gettime() - start);
+    printf("elapsed = %lld\n", __gettime() - start);
 #endif
 
     return c;

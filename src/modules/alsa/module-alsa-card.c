@@ -24,9 +24,9 @@
 #endif
 
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/queue.h>
 
@@ -37,6 +37,7 @@
 #endif
 
 #include "alsa-util.h"
+#include "alsa-ucm.h"
 #include "alsa-sink.h"
 #include "alsa-source.h"
 #include "module-alsa-card-symdef.h"
@@ -53,6 +54,7 @@ PA_MODULE_USAGE(
         "sink_properties=<properties for the sink> "
         "source_name=<name for the source> "
         "source_properties=<properties for the source> "
+        "namereg_fail=<when false attempt to synthesise new names if they are already taken> "
         "device_id=<ALSA card index> "
         "format=<sample format> "
         "rate=<sample rate> "
@@ -63,7 +65,13 @@ PA_MODULE_USAGE(
         "tsched_buffer_size=<buffer size when using timer based scheduling> "
         "tsched_buffer_watermark=<lower fill watermark> "
         "profile=<profile name> "
-        "ignore_dB=<ignore dB information from the device?>");
+        "fixed_latency_range=<disable latency range changes on underrun?> "
+        "ignore_dB=<ignore dB information from the device?> "
+        "deferred_volume=<Synchronize software and hardware volume changes to avoid momentary jumps?> "
+        "profile_set=<profile set configuration file> "
+        "paths_dir=<directory containing the path configuration files> "
+        "use_ucm=<load use case manager> "
+);
 
 static const char* const valid_modargs[] = {
     "name",
@@ -73,6 +81,7 @@ static const char* const valid_modargs[] = {
     "sink_properties",
     "source_name",
     "source_properties",
+    "namereg_fail",
     "device_id",
     "format",
     "rate",
@@ -82,8 +91,13 @@ static const char* const valid_modargs[] = {
     "tsched",
     "tsched_buffer_size",
     "tsched_buffer_watermark",
+    "fixed_latency_range",
     "profile",
     "ignore_dB",
+    "deferred_volume",
+    "profile_set",
+    "paths_dir",
+    "use_ucm",
     NULL
 };
 
@@ -94,19 +108,36 @@ struct userdata {
     pa_module *module;
 
     char *device_id;
+    int alsa_card_index;
+
+    snd_mixer_t *mixer_handle;
+    snd_hctl_t *hctl_handle;
+    pa_hashmap *jacks;
+    pa_alsa_fdlist *mixer_fdl;
 
     pa_card *card;
 
     pa_modargs *modargs;
 
     pa_alsa_profile_set *profile_set;
+
+    /* ucm stuffs */
+    pa_bool_t use_ucm;
+    pa_alsa_ucm_config ucm;
+
+    /* hooks for modifier action */
+    pa_hook_slot
+        *sink_input_put_hook_slot,
+        *source_output_put_hook_slot,
+        *sink_input_unlink_hook_slot,
+        *source_output_unlink_hook_slot;
 };
 
 struct profile_data {
     pa_alsa_profile *profile;
 };
 
-static void add_profiles(struct userdata *u, pa_hashmap *h) {
+static void add_profiles(struct userdata *u, pa_hashmap *h, pa_hashmap *ports) {
     pa_alsa_profile *ap;
     void *state;
 
@@ -125,17 +156,27 @@ static void add_profiles(struct userdata *u, pa_hashmap *h) {
         if (ap->output_mappings) {
             cp->n_sinks = pa_idxset_size(ap->output_mappings);
 
-            PA_IDXSET_FOREACH(m, ap->output_mappings, idx)
+            PA_IDXSET_FOREACH(m, ap->output_mappings, idx) {
+                if (u->use_ucm)
+                    pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context, TRUE, ports, cp, u->core);
+                else
+                    pa_alsa_path_set_add_ports(m->output_path_set, cp, ports, NULL, u->core);
                 if (m->channel_map.channels > cp->max_sink_channels)
                     cp->max_sink_channels = m->channel_map.channels;
+            }
         }
 
         if (ap->input_mappings) {
             cp->n_sources = pa_idxset_size(ap->input_mappings);
 
-            PA_IDXSET_FOREACH(m, ap->input_mappings, idx)
+            PA_IDXSET_FOREACH(m, ap->input_mappings, idx) {
+                if (u->use_ucm)
+                    pa_alsa_ucm_add_ports_combination(NULL, &m->ucm_context, FALSE, ports, cp, u->core);
+                else
+                    pa_alsa_path_set_add_ports(m->input_path_set, cp, ports, NULL, u->core);
                 if (m->channel_map.channels > cp->max_source_channels)
                     cp->max_source_channels = m->channel_map.channels;
+            }
         }
 
         d = PA_CARD_PROFILE_DATA(cp);
@@ -201,6 +242,13 @@ static int card_set_profile(pa_card *c, pa_card_profile *new_profile) {
             am->source = NULL;
         }
 
+    /* if UCM is available for this card then update the verb */
+    if (u->use_ucm) {
+        if (pa_alsa_ucm_set_profile(&u->ucm, nd->profile ? nd->profile->name : NULL,
+                    od->profile ? od->profile->name : NULL) < 0)
+            return -1;
+    }
+
     if (nd->profile && nd->profile->output_mappings)
         PA_IDXSET_FOREACH(am, nd->profile->output_mappings, idx) {
 
@@ -238,10 +286,19 @@ static void init_profile(struct userdata *u) {
     uint32_t idx;
     pa_alsa_mapping *am;
     struct profile_data *d;
+    pa_alsa_ucm_config *ucm = &u->ucm;
 
     pa_assert(u);
 
     d = PA_CARD_PROFILE_DATA(u->card->active_profile);
+
+    if (d->profile && u->use_ucm) {
+        /* Set initial verb */
+        if (pa_alsa_ucm_set_profile(ucm, d->profile->name, NULL) < 0) {
+            pa_log("Failed to set ucm profile %s", d->profile->name);
+            return;
+        }
+    }
 
     if (d->profile && d->profile->output_mappings)
         PA_IDXSET_FOREACH(am, d->profile->output_mappings, idx)
@@ -250,6 +307,214 @@ static void init_profile(struct userdata *u) {
     if (d->profile && d->profile->input_mappings)
         PA_IDXSET_FOREACH(am, d->profile->input_mappings, idx)
             am->source = pa_alsa_source_new(u->module, u->modargs, __FILE__, u->card, am);
+}
+
+static void report_port_state(pa_device_port *p, struct userdata *u)
+{
+    void *state;
+    pa_alsa_jack *jack;
+    pa_available_t pa = PA_AVAILABLE_UNKNOWN;
+    pa_device_port *port;
+
+    PA_HASHMAP_FOREACH(jack, u->jacks, state) {
+        pa_available_t cpa;
+
+        if (u->use_ucm)
+            port = pa_hashmap_get(u->card->ports, jack->name);
+        else {
+            if (jack->path)
+                port = jack->path->port;
+            else
+                continue;
+        }
+
+        if (p != port)
+            continue;
+
+        cpa = jack->plugged_in ? jack->state_plugged : jack->state_unplugged;
+
+        /* "Yes" and "no" trumphs "unknown" if we have more than one jack */
+        if (cpa == PA_AVAILABLE_UNKNOWN)
+            continue;
+
+        if ((cpa == PA_AVAILABLE_NO && pa == PA_AVAILABLE_YES) ||
+            (pa == PA_AVAILABLE_NO && cpa == PA_AVAILABLE_YES))
+            pa_log_warn("Availability of port '%s' is inconsistent!", p->name);
+        else
+            pa = cpa;
+    }
+
+    pa_device_port_set_available(p, pa);
+}
+
+static int report_jack_state(snd_hctl_elem_t *elem, unsigned int mask)
+{
+    struct userdata *u = snd_hctl_elem_get_callback_private(elem);
+    snd_ctl_elem_value_t *elem_value;
+    pa_bool_t plugged_in;
+    void *state;
+    pa_alsa_jack *jack;
+    pa_device_port *port;
+
+    pa_assert(u);
+
+    if (mask == SND_CTL_EVENT_MASK_REMOVE)
+        return 0;
+
+    snd_ctl_elem_value_alloca(&elem_value);
+    if (snd_hctl_elem_read(elem, elem_value) < 0) {
+        pa_log_warn("Failed to read jack detection from '%s'", pa_strnull(snd_hctl_elem_get_name(elem)));
+        return 0;
+    }
+
+    plugged_in = !!snd_ctl_elem_value_get_boolean(elem_value, 0);
+
+    pa_log_debug("Jack '%s' is now %s", pa_strnull(snd_hctl_elem_get_name(elem)), plugged_in ? "plugged in" : "unplugged");
+
+    PA_HASHMAP_FOREACH(jack, u->jacks, state)
+        if (jack->hctl_elem == elem) {
+            jack->plugged_in = plugged_in;
+            if (u->use_ucm) {
+                pa_assert(u->card->ports);
+                port = pa_hashmap_get(u->card->ports, jack->name);
+                pa_assert(port);
+            }
+            else {
+                pa_assert(jack->path && jack->path->port);
+                port = jack->path->port;
+            }
+            report_port_state(port, u);
+        }
+    return 0;
+}
+
+static pa_device_port* find_port_with_eld_device(pa_hashmap *ports, int device) {
+    void *state;
+    pa_device_port *p;
+
+    PA_HASHMAP_FOREACH(p, ports, state) {
+        pa_alsa_port_data *data = PA_DEVICE_PORT_DATA(p);
+        pa_assert(data->path);
+        if (device == data->path->eld_device)
+            return p;
+    }
+    return NULL;
+}
+
+static int hdmi_eld_changed(snd_hctl_elem_t *elem, unsigned int mask) {
+    struct userdata *u = snd_hctl_elem_get_callback_private(elem);
+    int device = snd_hctl_elem_get_device(elem);
+    const char *old_monitor_name;
+    pa_device_port *p;
+    pa_hdmi_eld eld;
+    bool changed = false;
+
+    if (mask == SND_CTL_EVENT_MASK_REMOVE)
+        return 0;
+
+    p = find_port_with_eld_device(u->card->ports, device);
+    if (p == NULL) {
+        pa_log_error("Invalid device changed in ALSA: %d", device);
+        return 0;
+    }
+
+    if (pa_alsa_get_hdmi_eld(u->hctl_handle, device, &eld) < 0)
+        memset(&eld, 0, sizeof(eld));
+
+    old_monitor_name = pa_proplist_gets(p->proplist, PA_PROP_DEVICE_PRODUCT_NAME);
+    if (eld.monitor_name[0] == '\0') {
+        changed |= old_monitor_name != NULL;
+        pa_proplist_unset(p->proplist, PA_PROP_DEVICE_PRODUCT_NAME);
+    } else {
+        changed |= (old_monitor_name == NULL) || (strcmp(old_monitor_name, eld.monitor_name) != 0);
+        pa_proplist_sets(p->proplist, PA_PROP_DEVICE_PRODUCT_NAME, eld.monitor_name);
+    }
+
+    if (changed && mask != 0)
+        pa_subscription_post(u->core, PA_SUBSCRIPTION_EVENT_CARD|PA_SUBSCRIPTION_EVENT_CHANGE, u->card->index);
+
+    return 0;
+}
+
+static void init_eld_ctls(struct userdata *u) {
+    void *state;
+    pa_device_port *port;
+
+    if (!u->hctl_handle)
+        return;
+
+    PA_HASHMAP_FOREACH(port, u->card->ports, state) {
+        pa_alsa_port_data *data = PA_DEVICE_PORT_DATA(port);
+        snd_hctl_elem_t* hctl_elem;
+        int device;
+
+        pa_assert(data->path);
+        device = data->path->eld_device;
+        if (device < 0)
+            continue;
+
+        hctl_elem = pa_alsa_find_eld_ctl(u->hctl_handle, device);
+        if (!hctl_elem) {
+            pa_log_debug("No ELD device found for port %s.", port->name);
+            continue;
+        }
+
+        snd_hctl_elem_set_callback_private(hctl_elem, u);
+        snd_hctl_elem_set_callback(hctl_elem, hdmi_eld_changed);
+        hdmi_eld_changed(hctl_elem, 0);
+    }
+}
+
+static void init_jacks(struct userdata *u) {
+    void *state;
+    pa_alsa_path* path;
+    pa_alsa_jack* jack;
+
+    u->jacks = pa_hashmap_new(pa_idxset_trivial_hash_func, pa_idxset_trivial_compare_func);
+
+    if (u->use_ucm) {
+        PA_LLIST_FOREACH(jack, u->ucm.jacks)
+            if (jack->has_control)
+                pa_hashmap_put(u->jacks, jack, jack);
+    } else {
+        /* See if we have any jacks */
+        if (u->profile_set->output_paths)
+            PA_HASHMAP_FOREACH(path, u->profile_set->output_paths, state)
+                PA_LLIST_FOREACH(jack, path->jacks)
+                    if (jack->has_control)
+                        pa_hashmap_put(u->jacks, jack, jack);
+
+        if (u->profile_set->input_paths)
+            PA_HASHMAP_FOREACH(path, u->profile_set->input_paths, state)
+                PA_LLIST_FOREACH(jack, path->jacks)
+                    if (jack->has_control)
+                        pa_hashmap_put(u->jacks, jack, jack);
+    }
+
+    pa_log_debug("Found %d jacks.", pa_hashmap_size(u->jacks));
+
+    if (pa_hashmap_size(u->jacks) == 0)
+        return;
+
+    u->mixer_fdl = pa_alsa_fdlist_new();
+
+    u->mixer_handle = pa_alsa_open_mixer(u->alsa_card_index, NULL, &u->hctl_handle);
+    if (u->mixer_handle && pa_alsa_fdlist_set_handle(u->mixer_fdl, NULL, u->hctl_handle, u->core->mainloop) >= 0) {
+        PA_HASHMAP_FOREACH(jack, u->jacks, state) {
+            jack->hctl_elem = pa_alsa_find_jack(u->hctl_handle, jack->alsa_name);
+            if (!jack->hctl_elem) {
+                pa_log_warn("Jack '%s' seems to have disappeared.", jack->alsa_name);
+                jack->has_control = FALSE;
+                continue;
+            }
+            snd_hctl_elem_set_callback_private(jack->hctl_elem, u);
+            snd_hctl_elem_set_callback(jack->hctl_elem, report_jack_state);
+            report_jack_state(jack->hctl_elem, 0);
+        }
+
+    } else
+        pa_log("Failed to open hctl/mixer for jack detection");
+
 }
 
 static void set_card_name(pa_card_new_data *data, pa_modargs *ma, const char *device_id) {
@@ -278,14 +543,76 @@ static void set_card_name(pa_card_new_data *data, pa_modargs *ma, const char *de
     pa_xfree(t);
 }
 
+static pa_hook_result_t sink_input_put_hook_callback(pa_core *c, pa_sink_input *sink_input, struct userdata *u) {
+    const char *role;
+    pa_sink *sink = sink_input->sink;
+
+    pa_assert(sink);
+
+    role = pa_proplist_gets(sink_input->proplist, PA_PROP_MEDIA_ROLE);
+
+    /* new sink input linked to sink of this card */
+    if (role && sink->card == u->card)
+        pa_alsa_ucm_roled_stream_begin(&u->ucm, role, PA_DIRECTION_OUTPUT);
+
+    return PA_HOOK_OK;
+}
+
+static pa_hook_result_t source_output_put_hook_callback(pa_core *c, pa_source_output *source_output, struct userdata *u) {
+    const char *role;
+    pa_source *source = source_output->source;
+
+    pa_assert(source);
+
+    role = pa_proplist_gets(source_output->proplist, PA_PROP_MEDIA_ROLE);
+
+    /* new source output linked to source of this card */
+    if (role && source->card == u->card)
+        pa_alsa_ucm_roled_stream_begin(&u->ucm, role, PA_DIRECTION_INPUT);
+
+    return PA_HOOK_OK;
+}
+
+static pa_hook_result_t sink_input_unlink_hook_callback(pa_core *c, pa_sink_input *sink_input, struct userdata *u) {
+    const char *role;
+    pa_sink *sink = sink_input->sink;
+
+    pa_assert(sink);
+
+    role = pa_proplist_gets(sink_input->proplist, PA_PROP_MEDIA_ROLE);
+
+    /* new sink input unlinked from sink of this card */
+    if (role && sink->card == u->card)
+        pa_alsa_ucm_roled_stream_end(&u->ucm, role, PA_DIRECTION_OUTPUT);
+
+    return PA_HOOK_OK;
+}
+
+static pa_hook_result_t source_output_unlink_hook_callback(pa_core *c, pa_source_output *source_output, struct userdata *u) {
+    const char *role;
+    pa_source *source = source_output->source;
+
+    pa_assert(source);
+
+    role = pa_proplist_gets(source_output->proplist, PA_PROP_MEDIA_ROLE);
+
+    /* new source output unlinked from source of this card */
+    if (role && source->card == u->card)
+        pa_alsa_ucm_roled_stream_end(&u->ucm, role, PA_DIRECTION_INPUT);
+
+    return PA_HOOK_OK;
+}
+
 int pa__init(pa_module *m) {
     pa_card_new_data data;
     pa_modargs *ma;
-    int alsa_card_index;
+    pa_bool_t ignore_dB = FALSE;
     struct userdata *u;
     pa_reserve_wrapper *reserve = NULL;
     const char *description;
+    const char *profile = NULL;
     char *fn = NULL;
+    pa_bool_t namereg_fail = FALSE;
 
     pa_alsa_refcnt_inc();
 
@@ -296,14 +623,22 @@ int pa__init(pa_module *m) {
         goto fail;
     }
 
+    if (pa_modargs_get_value_boolean(ma, "ignore_dB", &ignore_dB) < 0) {
+        pa_log("Failed to parse ignore_dB argument.");
+        goto fail;
+    }
+
     m->userdata = u = pa_xnew0(struct userdata, 1);
     u->core = m->core;
     u->module = m;
     u->device_id = pa_xstrdup(pa_modargs_get_value(ma, "device_id", DEFAULT_DEVICE_ID));
     u->modargs = ma;
 
-    if ((alsa_card_index = snd_card_get_index(u->device_id)) < 0) {
-        pa_log("Card '%s' doesn't exist: %s", u->device_id, pa_alsa_strerror(alsa_card_index));
+    u->use_ucm = TRUE;
+    u->ucm.core = m->core;
+
+    if ((u->alsa_card_index = snd_card_get_index(u->device_id)) < 0) {
+        pa_log("Card '%s' doesn't exist: %s", u->device_id, pa_alsa_strerror(u->alsa_card_index));
         goto fail;
     }
 
@@ -319,34 +654,81 @@ int pa__init(pa_module *m) {
         }
     }
 
+    pa_modargs_get_value_boolean(ma, "use_ucm", &u->use_ucm);
+    if (u->use_ucm && !pa_alsa_ucm_query_profiles(&u->ucm, u->alsa_card_index)) {
+        pa_log_info("Found UCM profiles");
+
+        u->profile_set = pa_alsa_ucm_add_profile_set(&u->ucm, &u->core->default_channel_map);
+
+        /* hook start of sink input/source output to enable modifiers */
+        /* A little bit later than module-role-cork */
+        u->sink_input_put_hook_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SINK_INPUT_PUT], PA_HOOK_LATE+10,
+                (pa_hook_cb_t) sink_input_put_hook_callback, u);
+        u->source_output_put_hook_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SOURCE_OUTPUT_PUT], PA_HOOK_LATE+10,
+                (pa_hook_cb_t) source_output_put_hook_callback, u);
+
+        /* hook end of sink input/source output to disable modifiers */
+        /* A little bit later than module-role-cork */
+        u->sink_input_unlink_hook_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SINK_INPUT_UNLINK], PA_HOOK_LATE+10,
+                (pa_hook_cb_t) sink_input_unlink_hook_callback, u);
+        u->source_output_unlink_hook_slot = pa_hook_connect(&m->core->hooks[PA_CORE_HOOK_SOURCE_OUTPUT_UNLINK], PA_HOOK_LATE+10,
+                (pa_hook_cb_t) source_output_unlink_hook_callback, u);
+    }
+    else {
+        u->use_ucm = FALSE;
 #ifdef HAVE_UDEV
-    fn = pa_udev_get_property(alsa_card_index, "PULSE_PROFILE_SET");
+        fn = pa_udev_get_property(u->alsa_card_index, "PULSE_PROFILE_SET");
+        pa_log("PULSE_PROFILE_SET = %s", fn);
+        if (fn == NULL) {
+            fn = strdup ("tizen_usb.conf");
+            pa_log("(new) PULSE_PROFILE_SET = %s", fn);
+        }
 #endif
 
-    u->profile_set = pa_alsa_profile_set_new(fn, &u->core->default_channel_map);
-    pa_xfree(fn);
+        if (pa_modargs_get_value(ma, "profile_set", NULL)) {
+            pa_xfree(fn);
+            fn = pa_xstrdup(pa_modargs_get_value(ma, "profile_set", NULL));
+        }
+
+        u->profile_set = pa_alsa_profile_set_new(fn, &u->core->default_channel_map);
+        pa_xfree(fn);
+    }
 
     if (!u->profile_set)
         goto fail;
 
+    u->profile_set->ignore_dB = ignore_dB;
+
     pa_alsa_profile_set_probe(u->profile_set, u->device_id, &m->core->default_sample_spec, m->core->default_n_fragments, m->core->default_fragment_size_msec);
+    pa_alsa_profile_set_dump(u->profile_set);
 
     pa_card_new_data_init(&data);
     data.driver = __FILE__;
     data.module = m;
 
-    pa_alsa_init_proplist_card(m->core, data.proplist, alsa_card_index);
+    pa_alsa_init_proplist_card(m->core, data.proplist, u->alsa_card_index);
 
     pa_proplist_sets(data.proplist, PA_PROP_DEVICE_STRING, u->device_id);
     pa_alsa_init_description(data.proplist);
     set_card_name(&data, ma, u->device_id);
 
+    /* We need to give pa_modargs_get_value_boolean() a pointer to a local
+     * variable instead of using &data.namereg_fail directly, because
+     * data.namereg_fail is a bitfield and taking the address of a bitfield
+     * variable is impossible. */
+    namereg_fail = data.namereg_fail;
+    if (pa_modargs_get_value_boolean(ma, "namereg_fail", &namereg_fail) < 0) {
+        pa_log("Failed to parse namereg_fail argument.");
+        pa_card_new_data_done(&data);
+        goto fail;
+    }
+    data.namereg_fail = namereg_fail;
+
     if (reserve)
         if ((description = pa_proplist_gets(data.proplist, PA_PROP_DEVICE_DESCRIPTION)))
             pa_reserve_wrapper_set_application_device_name(reserve, description);
 
-    data.profiles = pa_hashmap_new(pa_idxset_string_hash_func, pa_idxset_string_compare_func);
-    add_profiles(u, data.profiles);
+    add_profiles(u, data.profiles, data.ports);
 
     if (pa_hashmap_isempty(data.profiles)) {
         pa_log("Failed to find a working profile.");
@@ -362,6 +744,9 @@ int pa__init(pa_module *m) {
         goto fail;
     }
 
+    if ((profile = pa_modargs_get_value(ma, "profile", NULL)))
+        pa_card_new_data_set_profile(&data, profile);
+
     u->card = pa_card_new(m->core, &data);
     pa_card_new_data_done(&data);
 
@@ -371,10 +756,20 @@ int pa__init(pa_module *m) {
     u->card->userdata = u;
     u->card->set_profile = card_set_profile;
 
+    init_jacks(u);
     init_profile(u);
+    init_eld_ctls(u);
 
     if (reserve)
         pa_reserve_wrapper_unref(reserve);
+
+    if (!pa_hashmap_isempty(u->profile_set->decibel_fixes))
+        pa_log_warn("Card %s uses decibel fixes (i.e. overrides the decibel information for some alsa volume elements). "
+                    "Please note that this feature is meant just as a help for figuring out the correct decibel values. "
+                    "PulseAudio is not the correct place to maintain the decibel mappings! The fixed decibel values "
+                    "should be sent to ALSA developers so that they can fix the driver. If it turns out that this feature "
+                    "is abused (i.e. fixes are not pushed to ALSA), the decibel fix feature may be removed in some future "
+                    "PulseAudio version.", u->card->name);
 
     return 0;
 
@@ -415,19 +810,30 @@ void pa__done(pa_module*m) {
     if (!(u = m->userdata))
         goto finish;
 
-    if (u->card && u->card->sinks) {
-        pa_sink *s;
+    if (u->sink_input_put_hook_slot)
+        pa_hook_slot_free(u->sink_input_put_hook_slot);
 
-        while ((s = pa_idxset_steal_first(u->card->sinks, NULL)))
-            pa_alsa_sink_free(s);
-    }
+    if (u->sink_input_unlink_hook_slot)
+        pa_hook_slot_free(u->sink_input_unlink_hook_slot);
 
-    if (u->card && u->card->sources) {
-        pa_source *s;
+    if (u->source_output_put_hook_slot)
+        pa_hook_slot_free(u->source_output_put_hook_slot);
 
-        while ((s = pa_idxset_steal_first(u->card->sources, NULL)))
-            pa_alsa_source_free(s);
-    }
+    if (u->source_output_unlink_hook_slot)
+        pa_hook_slot_free(u->source_output_unlink_hook_slot);
+
+    if (u->mixer_fdl)
+        pa_alsa_fdlist_free(u->mixer_fdl);
+    if (u->mixer_handle)
+        snd_mixer_close(u->mixer_handle);
+    if (u->jacks)
+        pa_hashmap_free(u->jacks, NULL);
+
+    if (u->card && u->card->sinks)
+        pa_idxset_remove_all(u->card->sinks, (pa_free_cb_t) pa_alsa_sink_free);
+
+    if (u->card && u->card->sources)
+        pa_idxset_remove_all(u->card->sources, (pa_free_cb_t) pa_alsa_source_free);
 
     if (u->card)
         pa_card_free(u->card);
@@ -437,6 +843,8 @@ void pa__done(pa_module*m) {
 
     if (u->profile_set)
         pa_alsa_profile_set_free(u->profile_set);
+
+    pa_alsa_ucm_free(&u->ucm);
 
     pa_xfree(u->device_id);
     pa_xfree(u);

@@ -23,6 +23,7 @@
   USA.
 ***/
 
+#include <pulse/gccmacro.h>
 #include <pulse/sample.h>
 
 typedef void (*pa_convert_func_t)(unsigned n, const void *a, void *b);
@@ -32,6 +33,12 @@ pa_convert_func_t pa_get_convert_from_float32ne_function(pa_sample_format_t f) P
 
 pa_convert_func_t pa_get_convert_to_s16ne_function(pa_sample_format_t f) PA_GCC_PURE;
 pa_convert_func_t pa_get_convert_from_s16ne_function(pa_sample_format_t f) PA_GCC_PURE;
+
+#ifdef __TIZEN__
+pa_convert_func_t pa_get_convert_to_s24_32le_function(pa_sample_format_t f) PA_GCC_PURE;
+
+void pa_set_convert_to_s24_32le_function(pa_sample_format_t f, pa_convert_func_t func);
+#endif
 
 void pa_set_convert_to_float32ne_function(pa_sample_format_t f, pa_convert_func_t func);
 void pa_set_convert_from_float32ne_function(pa_sample_format_t f, pa_convert_func_t func);

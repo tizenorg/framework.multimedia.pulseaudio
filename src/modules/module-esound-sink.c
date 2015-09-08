@@ -24,18 +24,22 @@
 #endif
 
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
-#include <poll.h>
-#include <sys/socket.h>
+
+#ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
+#endif
+
+#ifdef HAVE_NETINET_TCP_H
 #include <netinet/tcp.h>
+#endif
+
+#ifdef HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
+#endif
 
 #ifdef HAVE_LINUX_SOCKIOS_H
 #include <linux/sockios.h>
@@ -45,11 +49,11 @@
 #include <pulse/timeval.h>
 #include <pulse/xmalloc.h>
 
+#include <pulsecore/socket.h>
 #include <pulsecore/core-error.h>
 #include <pulsecore/iochannel.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/module.h>
-#include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
@@ -60,6 +64,8 @@
 #include <pulsecore/thread.h>
 #include <pulsecore/time-smoother.h>
 #include <pulsecore/socket-util.h>
+#include <pulsecore/rtpoll.h>
+#include <pulsecore/poll.h>
 
 #include "module-esound-sink-symdef.h"
 
@@ -207,9 +213,8 @@ static void thread_func(void *userdata) {
     for (;;) {
         int ret;
 
-        if (PA_SINK_IS_OPENED(u->sink->thread_info.state))
-            if (u->sink->thread_info.rewind_requested)
-                pa_sink_process_rewind(u->sink, 0);
+        if (PA_UNLIKELY(u->sink->thread_info.rewind_requested))
+            pa_sink_process_rewind(u->sink, 0);
 
         if (u->rtpoll_item) {
             struct pollfd *pollfd;
@@ -371,7 +376,7 @@ static int do_write(struct userdata *u) {
 
         pa_make_tcp_socket_low_delay(u->fd);
 
-        if (getsockopt(u->fd, SOL_SOCKET, SO_SNDBUF, &so_sndbuf, &sl) < 0)
+        if (getsockopt(u->fd, SOL_SOCKET, SO_SNDBUF, (void *) &so_sndbuf, &sl) < 0)
             pa_log_warn("getsockopt(SO_SNDBUF) failed: %s", pa_cstrerror(errno));
         else {
             pa_log_debug("SO_SNDBUF is %zu.", (size_t) so_sndbuf);
@@ -617,7 +622,7 @@ int pa__init(pa_module*m) {
 
     /* Prepare the initial request */
     u->write_data = pa_xmalloc(u->write_length = ESD_KEY_LEN + sizeof(int32_t));
-    if (pa_authkey_load_auto(pa_modargs_get_value(ma, "cookie", ".esd_auth"), u->write_data, ESD_KEY_LEN) < 0) {
+    if (pa_authkey_load_auto(pa_modargs_get_value(ma, "cookie", ".esd_auth"), TRUE, u->write_data, ESD_KEY_LEN) < 0) {
         pa_log("Failed to load cookie");
         goto fail;
     }
@@ -628,7 +633,7 @@ int pa__init(pa_module*m) {
     /* Reserve space for the response */
     u->read_data = pa_xmalloc(u->read_length = sizeof(int32_t));
 
-    if (!(u->thread = pa_thread_new(thread_func, u))) {
+    if (!(u->thread = pa_thread_new("esound-sink", thread_func, u))) {
         pa_log("Failed to create thread.");
         goto fail;
     }

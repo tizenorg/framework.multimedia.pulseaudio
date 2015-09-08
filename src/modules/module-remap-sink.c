@@ -25,15 +25,12 @@
 
 #include <pulse/xmalloc.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/namereg.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
-#include <pulsecore/thread.h>
-#include <pulsecore/thread-mq.h>
 #include <pulsecore/rtpoll.h>
 
 #include "module-remap-sink-symdef.h"
@@ -188,6 +185,8 @@ static void sink_input_update_max_rewind_cb(pa_sink_input *i, size_t nbytes) {
     pa_sink_input_assert_ref(i);
     pa_assert_se(u = i->userdata);
 
+    /* FIXME: Too small max_rewind:
+     * https://bugs.freedesktop.org/show_bug.cgi?id=53709 */
     pa_sink_set_max_rewind_within_thread(u->sink, nbytes);
 }
 
@@ -244,6 +243,9 @@ static void sink_input_attach_cb(pa_sink_input *i) {
     pa_sink_set_latency_range_within_thread(u->sink, i->sink->thread_info.min_latency, i->sink->thread_info.max_latency);
     pa_sink_set_fixed_latency_within_thread(u->sink, i->sink->thread_info.fixed_latency);
     pa_sink_set_max_request_within_thread(u->sink, pa_sink_input_get_max_request(i));
+
+    /* FIXME: Too small max_rewind:
+     * https://bugs.freedesktop.org/show_bug.cgi?id=53709 */
     pa_sink_set_max_rewind_within_thread(u->sink, pa_sink_input_get_max_rewind(i));
 
     pa_sink_attach_within_thread(u->sink);
@@ -285,16 +287,6 @@ static void sink_input_state_change_cb(pa_sink_input *i, pa_sink_input_state_t s
         pa_log_debug("Requesting rewind due to state change.");
         pa_sink_input_request_rewind(i, 0, FALSE, TRUE, TRUE);
     }
-}
-
-/* Called from main context */
-static pa_bool_t sink_input_may_move_to_cb(pa_sink_input *i, pa_sink *dest) {
-    struct userdata *u;
-
-    pa_sink_input_assert_ref(i);
-    pa_assert_se(u = i->userdata);
-
-    return u->sink != dest;
 }
 
 /* Called from main context */
@@ -419,7 +411,8 @@ int pa__init(pa_module*m) {
     pa_sink_input_new_data_init(&sink_input_data);
     sink_input_data.driver = __FILE__;
     sink_input_data.module = m;
-    sink_input_data.sink = master;
+    pa_sink_input_new_data_set_sink(&sink_input_data, master, FALSE);
+    sink_input_data.origin_sink = u->sink;
     pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_NAME, "Remapped Stream");
     pa_proplist_sets(sink_input_data.proplist, PA_PROP_MEDIA_ROLE, "filter");
     pa_sink_input_new_data_set_sample_spec(&sink_input_data, &ss);
@@ -442,9 +435,10 @@ int pa__init(pa_module*m) {
     u->sink_input->detach = sink_input_detach_cb;
     u->sink_input->kill = sink_input_kill_cb;
     u->sink_input->state_change = sink_input_state_change_cb;
-    u->sink_input->may_move_to = sink_input_may_move_to_cb;
     u->sink_input->moving = sink_input_moving_cb;
     u->sink_input->userdata = u;
+
+    u->sink->input_to_master = u->sink_input;
 
     pa_sink_put(u->sink);
     pa_sink_input_put(u->sink_input);

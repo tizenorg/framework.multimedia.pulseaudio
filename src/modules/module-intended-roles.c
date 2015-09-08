@@ -24,16 +24,11 @@
 #endif
 
 #include <pulse/xmalloc.h>
-#include <pulse/volume.h>
-#include <pulse/timeval.h>
-#include <pulse/util.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-subscribe.h>
 #include <pulsecore/sink-input.h>
 #include <pulsecore/source-output.h>
 #include <pulsecore/namereg.h>
@@ -71,24 +66,7 @@ struct userdata {
 };
 
 static pa_bool_t role_match(pa_proplist *proplist, const char *role) {
-    const char *ir;
-    char *r;
-    const char *state = NULL;
-
-    if (!(ir = pa_proplist_gets(proplist, PA_PROP_DEVICE_INTENDED_ROLES)))
-        return FALSE;
-
-    while ((r = pa_split_spaces(ir, &state))) {
-
-        if (pa_streq(role, r)) {
-            pa_xfree(r);
-            return TRUE;
-        }
-
-        pa_xfree(r);
-    }
-
-    return FALSE;
+    return pa_str_in_list_spaces(pa_proplist_gets(proplist, PA_PROP_DEVICE_INTENDED_ROLES), role);
 }
 
 static pa_hook_result_t sink_input_new_hook_callback(pa_core *c, pa_sink_input_new_data *new_data, struct userdata *u) {
@@ -117,12 +95,10 @@ static pa_hook_result_t sink_input_new_hook_callback(pa_core *c, pa_sink_input_n
 
     /* Prefer the default sink over any other sink, just in case... */
     if ((def = pa_namereg_get_default_sink(c)))
-        if (role_match(def->proplist, role)) {
-            new_data->sink = def;
-            new_data->save_sink = FALSE;
+        if (role_match(def->proplist, role) && pa_sink_input_new_data_set_sink(new_data, def, FALSE))
             return PA_HOOK_OK;
-        }
 
+    /* @todo: favour the highest priority device, not the first one we find? */
     PA_IDXSET_FOREACH(s, c->sinks, idx) {
         if (s == def)
             continue;
@@ -130,11 +106,8 @@ static pa_hook_result_t sink_input_new_hook_callback(pa_core *c, pa_sink_input_n
         if (!PA_SINK_IS_LINKED(pa_sink_get_state(s)))
             continue;
 
-        if (role_match(s->proplist, role)) {
-            new_data->sink = s;
-            new_data->save_sink = FALSE;
+        if (role_match(s->proplist, role) && pa_sink_input_new_data_set_sink(new_data, s, FALSE))
             return PA_HOOK_OK;
-        }
     }
 
     return PA_HOOK_OK;
@@ -167,21 +140,23 @@ static pa_hook_result_t source_output_new_hook_callback(pa_core *c, pa_source_ou
     /* Prefer the default source over any other source, just in case... */
     if ((def = pa_namereg_get_default_source(c)))
         if (role_match(def->proplist, role)) {
-            new_data->source = def;
-            new_data->save_source = FALSE;
+            pa_source_output_new_data_set_source(new_data, def, FALSE);
             return PA_HOOK_OK;
         }
 
     PA_IDXSET_FOREACH(s, c->sources, idx) {
+        if (s->monitor_of)
+            continue;
+
         if (s == def)
             continue;
 
         if (!PA_SOURCE_IS_LINKED(pa_source_get_state(s)))
             continue;
 
+        /* @todo: favour the highest priority device, not the first one we find? */
         if (role_match(s->proplist, role)) {
-            new_data->source = s;
-            new_data->save_source = FALSE;
+            pa_source_output_new_data_set_source(new_data, s, FALSE);
             return PA_HOOK_OK;
         }
     }
@@ -241,6 +216,9 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
     pa_assert(source);
     pa_assert(u);
     pa_assert(u->on_hotplug);
+
+    if (source->monitor_of)
+        return PA_HOOK_OK;
 
     PA_IDXSET_FOREACH(so, c->source_outputs, idx) {
         const char *role;
@@ -315,6 +293,7 @@ static pa_hook_result_t sink_unlink_hook_callback(pa_core *c, pa_sink *sink, str
                 continue;
 
         /* Try to find some other fitting sink */
+        /* @todo: favour the highest priority device, not the first one we find? */
         PA_IDXSET_FOREACH(d, c->sinks, jdx) {
             if (d == def || d == sink)
                 continue;
@@ -370,6 +349,7 @@ static pa_hook_result_t source_unlink_hook_callback(pa_core *c, pa_source *sourc
         }
 
         /* Try to find some other fitting source */
+        /* @todo: favour the highest priority device, not the first one we find? */
         PA_IDXSET_FOREACH(d, c->sources, jdx) {
             if (d == def || d == source)
                 continue;
@@ -377,7 +357,8 @@ static pa_hook_result_t source_unlink_hook_callback(pa_core *c, pa_source *sourc
             if (!PA_SOURCE_IS_LINKED(pa_source_get_state(d)))
                 continue;
 
-            if (role_match(d->proplist, role) && !source->monitor_of == !d->monitor_of) {
+            /* If moving from a monitor, move to another monitor */
+            if (!source->monitor_of == !d->monitor_of && role_match(d->proplist, role)) {
                 pa_source_output_move_to(so, d, FALSE);
                 break;
             }
@@ -436,7 +417,7 @@ fail:
     if (ma)
         pa_modargs_free(ma);
 
-    return  -1;
+    return -1;
 }
 
 void pa__done(pa_module*m) {

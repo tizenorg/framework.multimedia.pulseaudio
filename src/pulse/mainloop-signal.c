@@ -30,18 +30,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 
 #ifdef HAVE_WINDOWS_H
 #include <windows.h>
 #endif
 
 #include <pulse/xmalloc.h>
-#include <pulse/gccmacro.h>
-#include <pulse/i18n.h>
 
 #include <pulsecore/core-error.h>
 #include <pulsecore/core-util.h>
+#include <pulsecore/i18n.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
 
@@ -74,7 +72,8 @@ static void signal_handler(int sig) {
     signal(sig, signal_handler);
 #endif
 
-    pa_write(signal_pipe[1], &sig, sizeof(sig), NULL);
+    /* XXX: If writing fails, there's nothing we can do? */
+    (void) pa_write(signal_pipe[1], &sig, sizeof(sig), NULL);
 
     errno = saved_errno;
 }
@@ -124,15 +123,13 @@ int pa_signal_init(pa_mainloop_api *a) {
     pa_assert(signal_pipe[1] == -1);
     pa_assert(!io_event);
 
-    if (pipe(signal_pipe) < 0) {
+    if (pa_pipe_cloexec(signal_pipe) < 0) {
         pa_log("pipe(): %s", pa_cstrerror(errno));
         return -1;
     }
 
     pa_make_fd_nonblock(signal_pipe[0]);
     pa_make_fd_nonblock(signal_pipe[1]);
-    pa_make_fd_cloexec(signal_pipe[0]);
-    pa_make_fd_cloexec(signal_pipe[1]);
 
     api = a;
 

@@ -24,19 +24,15 @@
 #endif
 
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
 
 #include <jack/jack.h>
 
 #include <pulse/xmalloc.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
@@ -51,7 +47,7 @@
 
 /* General overview:
  *
- * Because JACK has a very unflexible event loop management which
+ * Because JACK has a very inflexible event loop management which
  * doesn't allow us to add our own event sources to the event thread
  * we cannot use the JACK real-time thread for dispatching our PA
  * work. Instead, we run an additional RT thread which does most of
@@ -68,7 +64,7 @@ PA_MODULE_LOAD_ONCE(TRUE);
 PA_MODULE_VERSION(PACKAGE_VERSION);
 PA_MODULE_USAGE(
         "sink_name=<name for the sink> "
-        "sink_properties=<properties  for the card> "
+        "sink_properties=<properties for the card> "
         "server_name=<jack server name> "
         "client_name=<jack client name> "
         "channels=<number of channels> "
@@ -137,7 +133,7 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
 
                 pa_sink_render_full(u->sink, nbytes, &chunk);
 
-                p = (uint8_t*) pa_memblock_acquire(chunk.memblock) + chunk.index;
+                p = pa_memblock_acquire_chunk(&chunk);
                 pa_deinterleave(p, u->buffer, u->channels, sizeof(float), (unsigned) offset);
                 pa_memblock_release(chunk.memblock);
 
@@ -147,6 +143,7 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
                 pa_sample_spec ss;
 
                 /* Humm, we're not RUNNING, hence let's write some silence */
+                /* This can happen if we're paused, or during shutdown (when we're unlinked but jack is still running). */
 
                 ss = u->sink->sample_spec;
                 ss.channels = 1;
@@ -171,10 +168,12 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
 
         case PA_SINK_MESSAGE_GET_LATENCY: {
             jack_nframes_t l, ft, d;
+            jack_latency_range_t r;
             size_t n;
 
             /* This is the "worst-case" latency */
-            l = jack_port_get_total_latency(u->client, u->port[0]) + u->frames_in_buffer;
+            jack_port_get_latency_range(u->port[0], JackPlaybackLatency, &r);
+            l = r.max + u->frames_in_buffer;
 
             if (u->saved_frame_time_valid) {
                 /* Adjust the worst case latency by the time that
@@ -197,6 +196,7 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
     return pa_sink_process_msg(o, code, data, offset, memchunk);
 }
 
+/* JACK Callback: This is called when JACK needs some data */
 static int jack_process(jack_nframes_t nframes, void *arg) {
     struct userdata *u = arg;
     unsigned c;
@@ -229,9 +229,8 @@ static void thread_func(void *userdata) {
     for (;;) {
         int ret;
 
-        if (PA_SINK_IS_OPENED(u->sink->thread_info.state))
-            if (u->sink->thread_info.rewind_requested)
-                pa_sink_process_rewind(u->sink, 0);
+        if (PA_UNLIKELY(u->sink->thread_info.rewind_requested))
+            pa_sink_process_rewind(u->sink, 0);
 
         if ((ret = pa_rtpoll_run(u->rtpoll, TRUE)) < 0)
             goto fail;
@@ -250,6 +249,7 @@ finish:
     pa_log_debug("Thread shutting down");
 }
 
+/* JACK Callback: This is called when JACK triggers an error */
 static void jack_error_func(const char*t) {
     char *s;
 
@@ -258,6 +258,7 @@ static void jack_error_func(const char*t) {
     pa_xfree(s);
 }
 
+/* JACK Callback: This is called when JACK is set up */
 static void jack_init(void *arg) {
     struct userdata *u = arg;
 
@@ -267,6 +268,7 @@ static void jack_init(void *arg) {
         pa_make_realtime(u->core->realtime_priority+4);
 }
 
+/* JACK Callback: This is called when JACK kicks us */
 static void jack_shutdown(void* arg) {
     struct userdata *u = arg;
 
@@ -274,6 +276,7 @@ static void jack_shutdown(void* arg) {
     pa_asyncmsgq_post(u->jack_msgq, PA_MSGOBJECT(u->sink), SINK_MESSAGE_ON_SHUTDOWN, NULL, 0, NULL, NULL);
 }
 
+/* JACK Callback: This is called when JACK changes the buffer size */
 static int jack_buffer_size(jack_nframes_t nframes, void *arg) {
     struct userdata *u = arg;
 
@@ -294,6 +297,8 @@ int pa__init(pa_module*m) {
     unsigned i;
     const char **ports = NULL, **p;
     pa_sink_new_data data;
+    jack_latency_range_t r;
+    size_t n;
 
     pa_assert(m);
 
@@ -337,8 +342,9 @@ int pa__init(pa_module*m) {
     ports = jack_get_ports(u->client, NULL, JACK_DEFAULT_AUDIO_TYPE, JackPortIsPhysical|JackPortIsInput);
 
     channels = 0;
-    for (p = ports; *p; p++)
-        channels++;
+    if (ports)
+        for (p = ports; *p; p++)
+            channels++;
 
     if (!channels)
         channels = m->core->default_sample_spec.channels;
@@ -413,7 +419,7 @@ int pa__init(pa_module*m) {
     jack_set_thread_init_callback(u->client, jack_init, u);
     jack_set_buffer_size_callback(u->client, jack_buffer_size, u);
 
-    if (!(u->thread = pa_thread_new(thread_func, u))) {
+    if (!(u->thread = pa_thread_new("jack-sink", thread_func, u))) {
         pa_log("Failed to create thread.");
         goto fail;
     }
@@ -426,7 +432,7 @@ int pa__init(pa_module*m) {
     if (do_connect) {
         for (i = 0, p = ports; i < ss.channels; i++, p++) {
 
-            if (!*p) {
+            if (!p || !*p) {
                 pa_log("Not enough physical output ports, leaving unconnected.");
                 break;
             }
@@ -440,9 +446,13 @@ int pa__init(pa_module*m) {
         }
     }
 
+    jack_port_get_latency_range(u->port[0], JackPlaybackLatency, &r);
+    n = r.max * pa_frame_size(&u->sink->sample_spec);
+    pa_sink_set_fixed_latency(u->sink, pa_bytes_to_usec(n, &u->sink->sample_spec));
     pa_sink_put(u->sink);
 
-    free(ports);
+    if (ports)
+        jack_free(ports);
     pa_modargs_free(ma);
 
     return 0;
@@ -451,7 +461,8 @@ fail:
     if (ma)
         pa_modargs_free(ma);
 
-    free(ports);
+    if (ports)
+        jack_free(ports);
 
     pa__done(m);
 
@@ -475,11 +486,11 @@ void pa__done(pa_module*m) {
     if (!(u = m->userdata))
         return;
 
-    if (u->client)
-        jack_client_close(u->client);
-
     if (u->sink)
         pa_sink_unlink(u->sink);
+
+    if (u->client)
+        jack_client_close(u->client);
 
     if (u->thread) {
         pa_asyncmsgq_send(u->thread_mq.inq, NULL, PA_MESSAGE_SHUTDOWN, NULL, 0, NULL);

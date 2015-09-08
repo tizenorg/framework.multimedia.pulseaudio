@@ -21,12 +21,15 @@
 #include <config.h>
 #endif
 
+#include <check.h>
+
+#include <pulse/xmalloc.h>
 #include <pulsecore/thread.h>
+#include <pulsecore/macro.h>
 #include <pulsecore/mutex.h>
 #include <pulsecore/once.h>
 #include <pulsecore/log.h>
 #include <pulsecore/core-util.h>
-#include <pulse/xmalloc.h>
 
 static pa_mutex *mutex = NULL;
 static pa_cond *cond1 = NULL, *cond2 = NULL;
@@ -45,14 +48,14 @@ static pa_once once = PA_ONCE_INIT;
 static void thread_func(void *data) {
     pa_tls_set(tls, data);
 
-    pa_log("thread_func() for %s starting...", (char*) pa_tls_get(tls));
+    pa_log_info("thread_func() for %s starting...", (char*) pa_tls_get(tls));
 
     pa_mutex_lock(mutex);
 
     for (;;) {
         int k, n;
 
-        pa_log("%s waiting ...", (char*) pa_tls_get(tls));
+        pa_log_info("%s waiting ...", (char*) pa_tls_get(tls));
 
         for (;;) {
 
@@ -74,7 +77,7 @@ static void thread_func(void *data) {
 
         pa_cond_signal(cond2, 0);
 
-        pa_log("%s got number %i", (char*) pa_tls_get(tls), k);
+        pa_log_info("%s got number %i", (char*) pa_tls_get(tls), k);
 
         /* Spin! */
         for (n = 0; n < k; n++)
@@ -87,14 +90,15 @@ quit:
 
     pa_mutex_unlock(mutex);
 
-    pa_log("thread_func() for %s done...", (char*) pa_tls_get(tls));
+    pa_log_info("thread_func() for %s done...", (char*) pa_tls_get(tls));
 }
 
-int main(int argc, char *argv[]) {
+START_TEST (thread_test) {
     int i, k;
     pa_thread* t[THREADS_MAX];
 
-    assert(pa_thread_is_running(pa_thread_self()));
+    if (!getenv("MAKE_CHECK"))
+        pa_log_set_level(PA_LOG_DEBUG);
 
     mutex = pa_mutex_new(FALSE, FALSE);
     cond1 = pa_cond_new();
@@ -102,8 +106,8 @@ int main(int argc, char *argv[]) {
     tls = pa_tls_new(pa_xfree);
 
     for (i = 0; i < THREADS_MAX; i++) {
-        t[i] = pa_thread_new(thread_func, pa_sprintf_malloc("Thread #%i", i+1));
-        assert(t[i]);
+        t[i] = pa_thread_new("test", thread_func, pa_sprintf_malloc("Thread #%i", i+1));
+        fail_unless(t[i] != 0);
     }
 
     pa_mutex_lock(mutex);
@@ -111,12 +115,11 @@ int main(int argc, char *argv[]) {
     pa_log("loop-init");
 
     for (k = 0; k < 100; k++) {
-        assert(magic_number == 0);
-
+        pa_assert(magic_number == 0);
 
         magic_number = (int) rand() % 0x10000;
 
-        pa_log("iteration %i (%i)", k, magic_number);
+        pa_log_info("iteration %i (%i)", k, magic_number);
 
         pa_cond_signal(cond1, 0);
 
@@ -137,6 +140,24 @@ int main(int argc, char *argv[]) {
     pa_cond_free(cond1);
     pa_cond_free(cond2);
     pa_tls_free(tls);
+}
+END_TEST
 
-    return 0;
+int main(int argc, char *argv[]) {
+    int failed = 0;
+    Suite *s;
+    TCase *tc;
+    SRunner *sr;
+
+    s = suite_create("Thread");
+    tc = tcase_create("thread");
+    tcase_add_test(tc, thread_test);
+    suite_add_tcase(s, tc);
+
+    sr = srunner_create(s);
+    srunner_run_all(sr, CK_NORMAL);
+    failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+
+    return (failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -29,6 +29,32 @@
 #include <pulsecore/macro.h>
 #include <pulse/gccmacro.h>
 
+#ifdef USE_DLOG
+
+#include <dlog.h>
+#ifndef DLOG_TAG
+#define DLOG_TAG    "PULSEAUDIO"
+#endif
+#define USE_DLOG_DIRECT
+
+#define COLOR_BLACK     30
+#define COLOR_RED       31
+#define COLOR_GREEN     32
+#define COLOR_BLUE      34
+#define COLOR_MAGENTA   35
+#define COLOR_CYAN      36
+#define COLOR_WHITE     97
+#define COLOR_B_GRAY    100
+#define COLOR_B_RED     101
+#define COLOR_B_GREEN   102
+#define COLOR_B_YELLOW  103
+#define COLOR_B_BLUE    104
+#define COLOR_B_MAGENTA 105
+#define COLOR_B_CYAN    106
+#define COLOR_REVERSE   7
+
+#endif /* USE_DLOG */
+
 /* A simple logging subsystem */
 
 /* Where to log to */
@@ -40,6 +66,7 @@ typedef enum pa_log_target {
     PA_LOG_DLOG_COLOR,
 #endif
     PA_LOG_NULL,    /* to /dev/null */
+    PA_LOG_FD,      /* to a file descriptor, e.g. a char device */
     PA_LOG_TARGET_MAX
 } pa_log_target_t;
 
@@ -49,6 +76,9 @@ typedef enum pa_log_level {
     PA_LOG_NOTICE = 2,    /* Notice messages */
     PA_LOG_INFO   = 3,    /* Info messages */
     PA_LOG_DEBUG  = 4,    /* debug message */
+#ifdef __TIZEN_LOG__
+    PA_LOG_VERBOSE = 5,
+#endif
     PA_LOG_LEVEL_MAX
 } pa_log_level_t;
 
@@ -56,7 +86,7 @@ typedef enum pa_log_flags {
     PA_LOG_COLORS      = 0x01, /* Show colorful output */
     PA_LOG_PRINT_TIME  = 0x02, /* Show time */
     PA_LOG_PRINT_FILE  = 0x04, /* Show source file */
-    PA_LOG_PRINT_META  = 0x08, /* Show extended locaton information */
+    PA_LOG_PRINT_META  = 0x08, /* Show extended location information */
     PA_LOG_PRINT_LEVEL = 0x10, /* Show log level prefix */
 } pa_log_flags_t;
 
@@ -77,6 +107,10 @@ void pa_log_set_level(pa_log_level_t l);
 
 /* Set flags */
 void pa_log_set_flags(pa_log_flags_t flags, pa_log_merge_t merge);
+
+/* Set the file descriptor of the logging device.
+   Daemon conf is in charge of opening this device */
+void pa_log_set_fd(int fd);
 
 /* Enable backtrace */
 void pa_log_set_show_backtrace(unsigned nlevels);
@@ -112,6 +146,15 @@ void pa_log_levelv(
 
 /* ISO varargs available */
 
+#ifdef __TIZEN_LOG__
+#define pa_log_debug_verbose(...)   pa_log_level_meta(PA_LOG_VERBOSE,  __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define pa_log_info_verbose(...)    pa_log_level_meta(PA_LOG_VERBOSE,  __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define pa_log_info_debug(...)      pa_log_level_meta(PA_LOG_DEBUG,  __FILE__, __LINE__, __func__, __VA_ARGS__)
+#else
+#define pa_log_debug_verbose(...)   pa_log_level_meta(PA_LOG_DEBUG,  __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define pa_log_info_verbose(...)    pa_log_level_meta(PA_LOG_INFO,  __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define pa_log_info_debug(...)      pa_log_level_meta(PA_LOG_INFO,  __FILE__, __LINE__, __func__, __VA_ARGS__)
+#endif
 #define pa_log_debug(...)  pa_log_level_meta(PA_LOG_DEBUG,  __FILE__, __LINE__, __func__, __VA_ARGS__)
 #define pa_log_info(...)   pa_log_level_meta(PA_LOG_INFO,   __FILE__, __LINE__, __func__, __VA_ARGS__)
 #define pa_log_notice(...) pa_log_level_meta(PA_LOG_NOTICE, __FILE__, __LINE__, __func__, __VA_ARGS__)
@@ -129,6 +172,15 @@ PA_GCC_UNUSED static void pa_log_##suffix(const char *format, ...) { \
     va_end(ap); \
 }
 
+#ifdef __TIZEN_LOG__
+LOG_FUNC(debug_verbose, PA_LOG_VERBOSE)
+LOG_FUNC(info_verbose, PA_LOG_VERBOSE)
+LOG_FUNC(info_debug, PA_LOG_DEBUG)
+#else
+LOG_FUNC(debug_verbose, PA_LOG_DEBUG)
+LOG_FUNC(info_verbose, PA_LOG_INFO)
+LOG_FUNC(info_debug, PA_LOG_INFO)
+#endif
 LOG_FUNC(debug, PA_LOG_DEBUG)
 LOG_FUNC(info, PA_LOG_INFO)
 LOG_FUNC(notice, PA_LOG_NOTICE)
@@ -139,6 +191,6 @@ LOG_FUNC(error, PA_LOG_ERROR)
 
 #define pa_log pa_log_error
 
-pa_bool_t pa_log_ratelimit(void);
+pa_bool_t pa_log_ratelimit(pa_log_level_t level);
 
 #endif

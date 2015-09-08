@@ -24,16 +24,16 @@ USA.
 <manpage name="pulse-daemon.conf" section="5" desc="PulseAudio daemon configuration file">
 
   <synopsis>
-    <p><file>~/.pulse/daemon.conf</file></p>
+    <p><file>~/.config/pulse/daemon.conf</file></p>
 
-    <p><file>@pulseconfdir@/daemon.conf</file></p>
+    <p><file>@PA_DEFAULT_CONFIG_DIR@/daemon.conf</file></p>
   </synopsis>
 
   <description>
     <p>The PulseAudio sound server reads configuration directives from
-    a file <file>~/.pulse/daemon.conf</file> on startup and when that
+    a file <file>~/.config/pulse/daemon.conf</file> on startup and when that
     file doesn't exist from
-    <file>@pulseconfdir@/daemon.conf</file>. Please note that the
+    <file>@PA_DEFAULT_CONFIG_DIR@/daemon.conf</file>. Please note that the
     server also reads a configuration script on startup
     <file>default.pa</file> which also contains runtime configuration
     directives.</p>
@@ -53,21 +53,21 @@ USA.
 
     <option>
       <p><opt>daemonize= </opt> Daemonize after startup. Takes a
-      boolean value, defaults to "no". The <opt>--daemonize</opt>
+      boolean value, defaults to <opt>no</opt>. The <opt>--daemonize</opt>
       command line option takes precedence.</p>
     </option>
 
     <option>
       <p><opt>fail=</opt> Fail to start up if any of the directives
       in the configuration script <file>default.pa</file>
-      fail. Takes a boolean argument, defaults to "yes". The <opt>--fail</opt> command line
+      fail. Takes a boolean argument, defaults to <opt>yes</opt>. The <opt>--fail</opt> command line
       option takes precedence.</p>
     </option>
 
     <option>
       <p><opt>allow-module-loading=</opt> Allow/disallow module
       loading after startup. This is a security feature that if
-      dsabled makes sure that no further modules may be loaded into
+      disabled makes sure that no further modules may be loaded into
       the PulseAudio server after startup completed. It is recommended
       to disable this when <opt>system-instance</opt> is
       enabled. Please note that certain features like automatic
@@ -89,20 +89,21 @@ USA.
       <opt>src-zero-order-hold</opt>, <opt>src-linear</opt>,
       <opt>trivial</opt>, <opt>speex-float-N</opt>,
       <opt>speex-fixed-N</opt>, <opt>ffmpeg</opt>. See the
-      documentation of libsamplerate for an explanation for the
-      different src- methods. The method <opt>trivial</opt> is the most basic
-      algorithm implemented. If you're tight on CPU consider using
-      this. On the other hand it has the worst quality of them
-      all. The Speex resamplers take an integer quality setting in the
-      range 0..9 (bad...good). They exist in two flavours: <opt>fixed</opt> and
-      <opt>float</opt>. The former uses fixed point numbers, the latter relies on
-      floating point numbers. On most desktop CPUs the float point
-      resmampler is a lot faster, and it also offers slightly better
-      quality. See the output of <opt>dump-resample-methods</opt> for
-      a complete list of all available resamplers. Defaults to
-      <opt>speex-float-3</opt>. The <opt>--resample-method</opt>
-      command line option takes precedence. Note that some modules
-      overwrite or allow overwriting of the resampler to use.</p>
+      documentation of libsamplerate and speex for explanations of the
+      different src- and speex- methods, respectively. The method
+      <opt>trivial</opt> is the most basic algorithm implemented. If
+      you're tight on CPU consider using this. On the other hand it has
+      the worst quality of them all. The Speex resamplers take an
+      integer quality setting in the range 0..10 (bad...good). They
+      exist in two flavours: <opt>fixed</opt> and <opt>float</opt>. The former uses fixed point
+      numbers, the latter relies on floating point numbers. On most
+      desktop CPUs the float point resampler is a lot faster, and it
+      also offers slightly better quality. See the output of
+      <opt>dump-resample-methods</opt> for a complete list of all
+      available resamplers. Defaults to <opt>speex-float-1</opt>. The
+      <opt>--resample-method</opt> command line option takes precedence.
+      Note that some modules overwrite or allow overwriting of the
+      resampler to use.</p>
     </option>
 
     <option>
@@ -112,8 +113,8 @@ USA.
     </option>
 
     <option>
-      <p><opt>enable-lfe-remixing=</opt> if disabeld when upmixing or
-      downmixing ignore LFE channels. When this option is dsabled the
+      <p><opt>enable-lfe-remixing=</opt> If disabled when upmixing or
+      downmixing ignore LFE channels. When this option is disabled the
       output LFE channel will only get a signal when an input LFE
       channel is available as well. If no input LFE channel is
       available the output LFE channel will always be 0. If no output
@@ -122,13 +123,13 @@ USA.
     </option>
 
     <option>
-      <p><opt>use-pid-file=</opt> Create a PID file in
-      <file>/tmp/pulse-$USER/pid</file>. Of this is enabled you may
+      <p><opt>use-pid-file=</opt> Create a PID file in the runtime directory
+      (<file>$XDG_RUNTIMEDIR/pulse/pid</file>). If this is enabled you may
       use commands like <opt>--kill</opt> or <opt>--check</opt>. If
       you are planning to start more than one PulseAudio process per
       user, you better disable this option since it effectively
       disables multiple instances. Takes a boolean argument, defaults
-      to <opt>yes</opt>. The <opt>--no-cpu-limit</opt> command line
+      to <opt>yes</opt>. The <opt>--use-pid-file</opt> command line
       option takes precedence.</p>
     </option>
 
@@ -143,9 +144,25 @@ USA.
 
     <option>
       <p><opt>system-instance=</opt> Run the daemon as system-wide
-      instance, requires root priviliges. Takes a boolean argument,
+      instance, requires root privileges. Takes a boolean argument,
       defaults to <opt>no</opt>. The <opt>--system</opt> command line
       argument takes precedence.</p>
+    </option>
+
+    <option>
+      <p><opt>local-server-type=</opt> Please don't use this option if
+      you don't have to! This option is currently only useful when you
+      want D-Bus clients to use a remote server. This option may be
+      removed in future versions. If you only want to run PulseAudio
+      in the system mode, use the <opt>system-instance</opt> option.
+      This option takes one of <opt>user</opt>, <opt>system</opt> or
+      <opt>none</opt> as the argument. This is essentially a duplicate
+      for the <opt>system-instance</opt> option. The difference is the
+      <opt>none</opt> option, which is useful when you want to use a
+      remote server with D-Bus clients. If both this and
+      <opt>system-instance</opt> are defined, this option takes
+      precedence. Defaults to whatever the <opt>system-instance</opt>
+      is set.</p>
     </option>
 
     <option>
@@ -191,7 +208,7 @@ USA.
       RLIMIT_NICE is used. root is dropped immediately after gaining
       the nice level on startup, thus it is presumably safe. See
       <manref section="1" name="pulseaudio"/> for more
-      information. Takes a boolean argument, defaults to "yes". The <opt>--high-priority</opt>
+      information. Takes a boolean argument, defaults to <opt>yes</opt>. The <opt>--high-priority</opt>
       command line option takes precedence.</p>
     </option>
 
@@ -205,7 +222,7 @@ USA.
       real-time. The controlling thread is left a normally scheduled
       thread. Thus enabling the high-priority option is orthogonal.
       See <manref section="1" name="pulseaudio"/> for more
-      information. Takes a boolean argument, defaults to "yes". The
+      information. Takes a boolean argument, defaults to <opt>yes</opt>. The
       <opt>--realtime</opt> command line option takes precedence.</p>
     </option>
 
@@ -215,7 +232,7 @@ USA.
       by default, 9 for clients. Thus it is recommended to choose the
       PulseAudio real-time priorities lower. Some PulseAudio threads
       might choose a priority a little lower or higher than the
-      specified value. Defaults to "5".</p>
+      specified value. Defaults to <opt>5</opt>.</p>
     </option>
 
     <option>
@@ -250,7 +267,7 @@ USA.
     <option>
       <p><opt>dl-search-path=</opt> The path were to look for dynamic
       shared objects (DSOs/plugins). You may specify more than one
-      path seperated by colons. The default path depends on compile
+      path separated by colons. The default path depends on compile
       time settings. The <opt>--dl-search-path</opt> command line
       option takes precedence. </p>
     </option>
@@ -259,10 +276,10 @@ USA.
       <p><opt>default-script-file=</opt> The default configuration
       script file to load. Specify an empty string for not loading a
       default script file. The default behaviour is to load
-      <file>~/.pulse/default.pa</file>, and if that file does not
+      <file>~/.config/pulse/default.pa</file>, and if that file does not
       exist fall back to the system wide installed version
-      <file>@pulseconfdir@/default.pa</file>. If run in system-wide
-      mode the file <file>@pulseconfdir@/system.pa</file> is used
+      <file>@PA_DEFAULT_CONFIG_DIR@/default.pa</file>. If run in system-wide
+      mode the file <file>@PA_DEFAULT_CONFIG_DIR@/system.pa</file> is used
       instead. If <opt>-n</opt> is passed on the command line
       or <opt>default-script-file=</opt> is disabled the default
       configuration script is ignored.</p>
@@ -280,12 +297,15 @@ USA.
 
     <option>
       <p><opt>log-target=</opt> The default log target. Use either
-      <opt>stderr</opt>, <opt>syslog</opt> or <opt>auto</opt>. The
-      latter is equivalent to <opt>sylog</opt> in case
-      <opt>daemonize</opt> is enabled, otherwise to
-      <opt>stderr</opt>. Defaults to <opt>auto</opt>. The
-      <opt>--log-target</opt> command line option takes
-      precedence.</p>
+      <opt>stderr</opt>, <opt>syslog</opt>, <opt>auto</opt>,
+      <opt>file:PATH</opt> or <opt>newfile:PATH</opt>. <opt>auto</opt> is
+      equivalent to <opt>sylog</opt> in case <opt>daemonize</opt> is enabled,
+      otherwise to <opt>stderr</opt>. If set to <opt>file:PATH</opt>, logging
+      is directed to the file indicated by PATH. <opt>newfile:PATH</opt> is
+      otherwise the same as <opt>file:PATH</opt>, but existing files are never
+      overwritten. If the specified file already exists, a suffix is added to
+      the file name to avoid overwriting. Defaults to <opt>auto</opt>. The
+      <opt>--log-target</opt> command line option takes precedence.</p>
     </option>
 
     <option>
@@ -311,7 +331,7 @@ USA.
 
     <option>
       <p><opt>log-backtrace=</opt> When greater than 0, with each
-      logged message log a code stack trace up the the specified
+      logged message log a code stack trace up the specified
       number of stack frames. Defaults to <opt>0</opt>.</p>
     </option>
 
@@ -393,7 +413,7 @@ USA.
       <opt>s16be</opt>, <opt>s24le</opt>, <opt>s24be</opt>,
       <opt>s24-32le</opt>, <opt>s24-32be</opt>, <opt>s32le</opt>,
       <opt>s32be</opt> <opt>float32le</opt>, <opt>float32be</opt>,
-      <opt>ulaw</opt>, <opt>alaw</opt>. Depending on the endianess of
+      <opt>ulaw</opt>, <opt>alaw</opt>. Depending on the endianness of
       the CPU the formats <opt>s16ne</opt>, <opt>s16re</opt>,
       <opt>s24ne</opt>, <opt>s24re</opt>, <opt>s24-32ne</opt>,
       <opt>s24-32re</opt>, <opt>s32ne</opt>, <opt>s32re</opt>,
@@ -411,6 +431,17 @@ USA.
 
     <option>
       <p><opt>default-channel-map</opt> The default channel map.</p>
+    </option>
+
+    <option>
+      <p><opt>alternate-sample-rate</opt> The alternate sample
+      frequency. Sinks and sources will use either the
+      default-rate-rate value or this alternate value, typically 44.1
+      or 48kHz. Switching between default and alternate values is
+      enabled only when the sinks/sources are suspended. This option
+      is ignored in passthrough mode where the stream rate will be used.
+      If set to the same as the default sample rate, this feature is
+      disabled.</p>
     </option>
 
   </section>
@@ -433,6 +464,36 @@ USA.
       <p><opt>default-fragment-size-msec=</opt>The duration of a
       single fragment. Defaults to 25ms (i.e. the total buffer is thus
       100ms long).</p>
+    </option>
+
+  </section>
+
+  <section name="Default Deferred Volume Settings">
+
+    <p>With the flat volume feature enabled, the sink HW volume is set
+    to the same level as the highest volume input stream. Any other streams
+    (with lower volumes) have the appropriate adjustment applied in SW to
+    bring them to the correct overall level. Sadly hardware mixer changes
+    cannot be timed accurately and thus this change of volumes can sometimes
+    cause the resulting output sound to be momentarily too loud or too soft.
+    So to ensure SW and HW volumes are applied concurrently without any
+    glitches, their application needs to be synchronized. The sink
+    implementation needs to support deferred volumes. The following
+    parameters can be used to refine the process.</p>
+
+    <option>
+      <p><opt>enable-deferred-volume=</opt> Enable deferred volume for the sinks that
+      support it. This feature is enabled by default.</p>
+    </option>
+    <option>
+      <p><opt>deferred-volume-safety-margin-usec=</opt> The amount of time (in
+      usec) by which the HW volume increases are delayed and HW volume
+      decreases are advanced. Defaults to 8000 usec.</p>
+    </option>
+    <option>
+      <p><opt>deferred-volume-extra-delay-usec=</opt> The amount of time (in usec)
+      by which HW volume changes are delayed. Negative values are also allowed.
+      Defaults to 0.</p>
     </option>
 
   </section>

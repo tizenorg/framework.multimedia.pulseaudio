@@ -24,10 +24,8 @@
 #endif
 
 #include <stdlib.h>
-#include <limits.h>
 #include <stdio.h>
 #include <errno.h>
-#include <string.h>
 
 #include <pulse/xmalloc.h>
 #include <pulse/timeval.h>
@@ -87,7 +85,7 @@ enum {
 enum {
     CONNECTION_MESSAGE_REQUEST_DATA,      /* data requested from sink input from the main loop */
     CONNECTION_MESSAGE_POST_DATA,         /* data from source output to main loop */
-    CONNECTION_MESSAGE_UNLINK_CONNECTION    /* Please drop a aconnection now */
+    CONNECTION_MESSAGE_UNLINK_CONNECTION  /* Please drop the connection now */
 };
 
 #define PLAYBACK_BUFFER_SECONDS (.5)
@@ -525,6 +523,7 @@ void pa_simple_protocol_connect(pa_simple_protocol *p, pa_iochannel *io, pa_simp
 
     if (o->playback) {
         pa_sink_input_new_data data;
+        pa_memchunk silence;
         size_t l;
         pa_sink *sink;
 
@@ -537,7 +536,7 @@ void pa_simple_protocol_connect(pa_simple_protocol *p, pa_iochannel *io, pa_simp
         data.driver = __FILE__;
         data.module = o->module;
         data.client = c->client;
-        data.sink = sink;
+        pa_sink_input_new_data_set_sink(&data, sink, FALSE);
         pa_proplist_update(data.proplist, PA_UPDATE_MERGE, c->client->proplist);
         pa_sink_input_new_data_set_sample_spec(&data, &o->sample_spec);
 
@@ -559,18 +558,22 @@ void pa_simple_protocol_connect(pa_simple_protocol *p, pa_iochannel *io, pa_simp
         pa_sink_input_set_requested_latency(c->sink_input, DEFAULT_SINK_LATENCY);
 
         l = (size_t) ((double) pa_bytes_per_second(&o->sample_spec)*PLAYBACK_BUFFER_SECONDS);
+        pa_sink_input_get_silence(c->sink_input, &silence);
         c->input_memblockq = pa_memblockq_new(
+                "simple protocol connection input_memblockq",
                 0,
                 l,
                 l,
-                pa_frame_size(&o->sample_spec),
+                &o->sample_spec,
                 (size_t) -1,
                 l/PLAYBACK_BUFFER_FRAGMENTS,
                 0,
-                NULL);
+                &silence);
+        pa_memblock_unref(silence.memblock);
+
         pa_iochannel_socket_set_rcvbuf(io, l);
 
-        pa_atomic_store(&c->playback.missing, (int) pa_memblockq_missing(c->input_memblockq));
+        pa_atomic_store(&c->playback.missing, (int) pa_memblockq_pop_missing(c->input_memblockq));
 
         pa_sink_input_put(c->sink_input);
     }
@@ -589,7 +592,7 @@ void pa_simple_protocol_connect(pa_simple_protocol *p, pa_iochannel *io, pa_simp
         data.driver = __FILE__;
         data.module = o->module;
         data.client = c->client;
-        data.source = source;
+        pa_source_output_new_data_set_source(&data, source, FALSE);
         pa_proplist_update(data.proplist, PA_UPDATE_MERGE, c->client->proplist);
         pa_source_output_new_data_set_sample_spec(&data, &o->sample_spec);
 
@@ -609,10 +612,11 @@ void pa_simple_protocol_connect(pa_simple_protocol *p, pa_iochannel *io, pa_simp
 
         l = (size_t) (pa_bytes_per_second(&o->sample_spec)*RECORD_BUFFER_SECONDS);
         c->output_memblockq = pa_memblockq_new(
+                "simple protocol connection output_memblockq",
                 0,
                 l,
                 0,
-                pa_frame_size(&o->sample_spec),
+                &o->sample_spec,
                 1,
                 0,
                 0,
@@ -686,7 +690,7 @@ void pa_simple_protocol_unref(pa_simple_protocol *p) {
     while ((c = pa_idxset_first(p->connections, NULL)))
         connection_unlink(c);
 
-    pa_idxset_free(p->connections, NULL, NULL);
+    pa_idxset_free(p->connections, NULL);
 
     pa_assert_se(pa_shared_remove(p->core, "simple-protocol") >= 0);
 

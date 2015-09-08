@@ -68,8 +68,13 @@
  * /dev/shm. We can use that information to list all blocks and
  * cleanup unused ones */
 #define SHM_PATH "/dev/shm/"
+#define SHM_ID_LEN 10
+#elif defined(__sun)
+#define SHM_PATH "/tmp"
+#define SHM_ID_LEN 15
 #else
 #undef SHM_PATH
+#undef SHM_ID_LEN
 #endif
 
 #define SHM_MARKER ((int) 0xbeefcafe)
@@ -77,7 +82,7 @@
 /* We now put this SHM marker at the end of each segment. It's
  * optional, to not require a reboot when upgrading, though. Note that
  * on multiarch systems 32bit and 64bit processes might access this
- * region simultaneously. The header fields need to be independant
+ * region simultaneously. The header fields need to be independent
  * from the process' word with */
 struct shm_marker {
     pa_atomic_t marker; /* 0xbeefcafe */
@@ -90,18 +95,23 @@ struct shm_marker {
 
 #define SHM_MARKER_SIZE PA_ALIGN(sizeof(struct shm_marker))
 
+#ifdef HAVE_SHM_OPEN
 static char *segment_name(char *fn, size_t l, unsigned id) {
     pa_snprintf(fn, l, "/pulse-shm-%u", id);
     return fn;
 }
+#endif
 
 int pa_shm_create_rw(pa_shm *m, size_t size, pa_bool_t shared, mode_t mode) {
+#ifdef HAVE_SHM_OPEN
     char fn[32];
     int fd = -1;
+#endif
 
     pa_assert(m);
     pa_assert(size > 0);
     pa_assert(size <= MAX_SHM_SIZE);
+    pa_assert(!(mode & ~0777));
     pa_assert(mode >= 0600);
 
     /* Each time we create a new SHM area, let's first drop all stale
@@ -142,7 +152,7 @@ int pa_shm_create_rw(pa_shm *m, size_t size, pa_bool_t shared, mode_t mode) {
         pa_random(&m->id, sizeof(m->id));
         segment_name(fn, sizeof(fn), m->id);
 
-        if ((fd = shm_open(fn, O_RDWR|O_CREAT|O_EXCL, mode & 0444)) < 0) {
+        if ((fd = shm_open(fn, O_RDWR|O_CREAT|O_EXCL, mode)) < 0) {
             pa_log("shm_open() failed: %s", pa_cstrerror(errno));
             goto fail;
         }
@@ -154,7 +164,11 @@ int pa_shm_create_rw(pa_shm *m, size_t size, pa_bool_t shared, mode_t mode) {
             goto fail;
         }
 
-        if ((m->ptr = mmap(NULL, PA_PAGE_ALIGN(m->size), PROT_READ|PROT_WRITE, MAP_SHARED, fd, (off_t) 0)) == MAP_FAILED) {
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
+#endif
+
+        if ((m->ptr = mmap(NULL, PA_PAGE_ALIGN(m->size), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_NORESERVE, fd, (off_t) 0)) == MAP_FAILED) {
             pa_log("mmap() failed: %s", pa_cstrerror(errno));
             goto fail;
         }
@@ -168,7 +182,7 @@ int pa_shm_create_rw(pa_shm *m, size_t size, pa_bool_t shared, mode_t mode) {
         pa_assert_se(pa_close(fd) == 0);
         m->do_unlink = TRUE;
 #else
-        return -1;
+        goto fail;
 #endif
     }
 
@@ -286,7 +300,7 @@ int pa_shm_attach_ro(pa_shm *m, unsigned id) {
     segment_name(fn, sizeof(fn), m->id = id);
 
     if ((fd = shm_open(fn, O_RDONLY, 0)) < 0) {
-        if (errno != EACCES)
+        if (errno != EACCES && errno != ENOENT)
             pa_log("shm_open() failed: %s", pa_cstrerror(errno));
         goto fail;
     }
@@ -351,10 +365,14 @@ int pa_shm_cleanup(void) {
         char fn[128];
         struct shm_marker *m;
 
-        if (strncmp(de->d_name, "pulse-shm-", 10))
+#if defined(__sun)
+        if (strncmp(de->d_name, ".SHMDpulse-shm-", SHM_ID_LEN))
+#else
+        if (strncmp(de->d_name, "pulse-shm-", SHM_ID_LEN))
+#endif
             continue;
 
-        if (pa_atou(de->d_name + 10, &id) < 0)
+        if (pa_atou(de->d_name + SHM_ID_LEN, &id) < 0)
             continue;
 
         if (pa_shm_attach_ro(&seg, id) < 0)

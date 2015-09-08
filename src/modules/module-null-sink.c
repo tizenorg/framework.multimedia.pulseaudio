@@ -24,25 +24,19 @@
 #endif
 
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
-#include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
 
 #include <pulse/rtclock.h>
 #include <pulse/timeval.h>
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/module.h>
-#include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
-#include <pulsecore/core-error.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
 #include <pulsecore/thread.h>
@@ -86,7 +80,6 @@ static const char* const valid_modargs[] = {
     "rate",
     "channels",
     "channel_map",
-    "description", /* supported for compatibility reasons, made redundant by sink_properties= */
     NULL
 };
 
@@ -143,11 +136,11 @@ static void process_rewind(struct userdata *u, pa_usec_t now) {
 
     pa_assert(u);
 
-    /* Figure out how much we shall rewind and reset the counter */
     rewind_nbytes = u->sink->thread_info.rewind_nbytes;
-    u->sink->thread_info.rewind_nbytes = 0;
 
-    pa_assert(rewind_nbytes > 0);
+    if (!PA_SINK_IS_OPENED(u->sink->thread_info.state) || rewind_nbytes <= 0)
+        goto do_nothing;
+
     pa_log_debug("Requested to rewind %lu bytes.", (unsigned long) rewind_nbytes);
 
     if (u->timestamp <= now)
@@ -180,10 +173,10 @@ static void process_render(struct userdata *u, pa_usec_t now) {
 
     /* This is the configured latency. Sink inputs connected to us
     might not have a single frame more than the maxrequest value
-    queed. Hence: at maximum read this many bytes from the sink
+    queued. Hence: at maximum read this many bytes from the sink
     inputs. */
 
-    /* Fill the buffer up the the latency size */
+    /* Fill the buffer up the latency size */
     while (u->timestamp < now + u->block_usec) {
         pa_memchunk chunk;
 
@@ -214,21 +207,17 @@ static void thread_func(void *userdata) {
     u->timestamp = pa_rtclock_now();
 
     for (;;) {
+        pa_usec_t now = 0;
         int ret;
+
+        if (PA_SINK_IS_OPENED(u->sink->thread_info.state))
+            now = pa_rtclock_now();
+
+        if (PA_UNLIKELY(u->sink->thread_info.rewind_requested))
+            process_rewind(u, now);
 
         /* Render some data and drop it immediately */
         if (PA_SINK_IS_OPENED(u->sink->thread_info.state)) {
-            pa_usec_t now;
-
-            now = pa_rtclock_now();
-
-            if (u->sink->thread_info.rewind_requested) {
-                if (u->sink->thread_info.rewind_nbytes > 0)
-                    process_rewind(u, now);
-                else
-                    pa_sink_process_rewind(u->sink, 0);
-            }
-
             if (u->timestamp <= now)
                 process_render(u, now);
 
@@ -288,7 +277,7 @@ int pa__init(pa_module*m) {
     pa_sink_new_data_set_name(&data, pa_modargs_get_value(ma, "sink_name", DEFAULT_SINK_NAME));
     pa_sink_new_data_set_sample_spec(&data, &ss);
     pa_sink_new_data_set_channel_map(&data, &map);
-    pa_proplist_sets(data.proplist, PA_PROP_DEVICE_DESCRIPTION, pa_modargs_get_value(ma, "description", _("Null Output")));
+    pa_proplist_sets(data.proplist, PA_PROP_DEVICE_DESCRIPTION, _("Null Output"));
     pa_proplist_sets(data.proplist, PA_PROP_DEVICE_CLASS, "abstract");
 
     if (pa_modargs_get_proplist(ma, "sink_properties", data.proplist, PA_UPDATE_REPLACE) < 0) {
@@ -317,10 +306,12 @@ int pa__init(pa_module*m) {
     pa_sink_set_max_rewind(u->sink, nbytes);
     pa_sink_set_max_request(u->sink, nbytes);
 
-    if (!(u->thread = pa_thread_new(thread_func, u))) {
+    if (!(u->thread = pa_thread_new("null-sink", thread_func, u))) {
         pa_log("Failed to create thread.");
         goto fail;
     }
+
+    pa_sink_set_latency_range(u->sink, 0, BLOCK_USEC);
 
     pa_sink_put(u->sink);
 

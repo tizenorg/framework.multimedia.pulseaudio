@@ -51,7 +51,7 @@ typedef int (*rd_request_cb_t)(
  * the error was caused D-Bus. */
 int rd_acquire(
 	rd_device **d,                /* On success a pointer to the newly allocated rd_device object will be filled in here */
-	DBusConnection *connection,   /* Session bus (when D-Bus learns about user busses we should switchg to user busses) */
+	DBusConnection *connection,   /* Session bus (when D-Bus learns about user busses we should switch to user busses) */
 	const char *device_name,      /* The device to lock, e.g. "Audio0" */
 	const char *application_name, /* A human readable name of the application, e.g. "PulseAudio Sound Server" */
 	int32_t priority,             /* The priority for this application. If unsure use 0 */
@@ -71,6 +71,15 @@ void rd_set_userdata(rd_device *d, void *userdata);
 /* Query the userdata pointer from an rd_device. Returns NULL if no
  * userdata was set. */
 void* rd_get_userdata(rd_device *d);
+
+/* Helper function to get the unique connection name owning a given
+ * name. Returns 0 on success, a negative errno style return value on
+ * error. */
+int rd_dbus_get_name_owner(
+	DBusConnection *connection,
+	const char *name,
+	char **name_owner,
+	DBusError *error);
 
 #ifdef __cplusplus
 }

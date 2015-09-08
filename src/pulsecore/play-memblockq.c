@@ -25,14 +25,11 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/gccmacro.h>
 
 #include <pulsecore/sink-input.h>
 #include <pulsecore/thread-mq.h>
-#include <pulsecore/sample-util.h>
 
 #include "play-memblockq.h"
 
@@ -135,6 +132,15 @@ static int sink_input_pop_cb(pa_sink_input *i, size_t nbytes, pa_memchunk *chunk
         return -1;
     }
 
+    /* If there's no memblock, there's going to be data in the memblockq after
+     * a gap with length chunk->length. Drop the gap and peek the actual
+     * data. There should always be some data coming - hence the assert. The
+     * gap will occur if the memblockq is rewound beyond index 0.*/
+    if (!chunk->memblock) {
+        pa_memblockq_drop(u->memblockq, chunk->length);
+        pa_assert_se(pa_memblockq_peek(u->memblockq, chunk) >= 0);
+    }
+
     chunk->length = PA_MIN(chunk->length, nbytes);
     pa_memblockq_drop(u->memblockq, chunk->length);
 
@@ -173,7 +179,8 @@ pa_sink_input* pa_memblockq_sink_input_new(
         const pa_channel_map *map,
         pa_memblockq *q,
         pa_cvolume *volume,
-        pa_proplist *p) {
+        pa_proplist *p,
+        pa_sink_input_flags_t flags) {
 
     memblockq_stream *u = NULL;
     pa_sink_input_new_data data;
@@ -192,12 +199,13 @@ pa_sink_input* pa_memblockq_sink_input_new(
     u->memblockq = NULL;
 
     pa_sink_input_new_data_init(&data);
-    data.sink = sink;
+    pa_sink_input_new_data_set_sink(&data, sink, FALSE);
     data.driver = __FILE__;
     pa_sink_input_new_data_set_sample_spec(&data, ss);
     pa_sink_input_new_data_set_channel_map(&data, map);
     pa_sink_input_new_data_set_volume(&data, volume);
     pa_proplist_update(data.proplist, PA_UPDATE_REPLACE, p);
+    data.flags |= flags;
 
     pa_sink_input_new(&u->sink_input, sink->core, &data);
     pa_sink_input_new_data_done(&data);
@@ -237,6 +245,7 @@ int pa_play_memblockq(
         pa_memblockq *q,
         pa_cvolume *volume,
         pa_proplist *p,
+        pa_sink_input_flags_t flags,
         uint32_t *sink_input_index) {
 
     pa_sink_input *i;
@@ -245,7 +254,7 @@ int pa_play_memblockq(
     pa_assert(ss);
     pa_assert(q);
 
-    if (!(i = pa_memblockq_sink_input_new(sink, ss, map, q, volume, p)))
+    if (!(i = pa_memblockq_sink_input_new(sink, ss, map, q, volume, p, flags)))
         return -1;
 
     pa_sink_input_put(i);

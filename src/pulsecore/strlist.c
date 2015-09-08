@@ -49,7 +49,7 @@ pa_strlist* pa_strlist_prepend(pa_strlist *l, const char *s) {
     memcpy(ITEM_TO_TEXT(n), s, size + 1);
     n->next = l;
 
-    return  n;
+    return n;
 }
 
 char *pa_strlist_tostring(pa_strlist *l) {
@@ -74,7 +74,7 @@ pa_strlist* pa_strlist_remove(pa_strlist *l, const char *s) {
     pa_assert(s);
 
     while (l) {
-        if (!strcmp(ITEM_TO_TEXT(l), s)) {
+        if (pa_streq(ITEM_TO_TEXT(l), s)) {
             pa_strlist *n = l->next;
 
             if (!prev) {

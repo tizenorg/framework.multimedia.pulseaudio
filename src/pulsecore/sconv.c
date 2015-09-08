@@ -26,13 +26,14 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include <pulsecore/g711.h>
 #include <pulsecore/macro.h>
+#include <pulsecore/endianmacros.h>
 
-#include "endianmacros.h"
-#include "sconv-s16le.h"
-#include "sconv-s16be.h"
+#include <pulsecore/sconv-s16le.h>
+#include <pulsecore/sconv-s16be.h>
 
 #include "sconv.h"
 
@@ -82,6 +83,16 @@ static void float32ne_to_float32ne(unsigned n, const float *a, float *b) {
 
     memcpy(b, a, (int) (sizeof(float) * n));
 }
+
+#ifdef __TIZEN__
+static void u8_to_s24_32le(unsigned n, const uint8_t *a, int32_t *b) {
+    pa_assert(a);
+    pa_assert(b);
+
+    for (; n > 0; n--, a++, b++)
+        *b = (((int32_t)*a) - 128) << 8;
+}
+#endif
 
 static void float32re_to_float32ne(unsigned n, const float *a, float *b) {
     pa_assert(a);
@@ -311,3 +322,38 @@ void pa_set_convert_from_s16ne_function(pa_sample_format_t f, pa_convert_func_t 
 
     from_s16ne_table[f] = func;
 }
+
+#ifdef __TIZEN__
+static pa_convert_func_t to_s24_32le_table[] = {
+    [PA_SAMPLE_U8]        = (pa_convert_func_t) u8_to_s24_32le,
+    [PA_SAMPLE_S16NE]     = (pa_convert_func_t) pa_sconv_s24_32le_from_s16ne,
+    [PA_SAMPLE_S16RE]     = (pa_convert_func_t) pa_sconv_s24_32le_from_s16re,
+     /** TODO: In future conversion function will be added based on requirement*/
+    [PA_SAMPLE_FLOAT32BE] = (pa_convert_func_t) NULL, //pa_sconv_float32be_to_s24_32le,
+    [PA_SAMPLE_FLOAT32LE] = (pa_convert_func_t) NULL, //pa_sconv_float32le_to_s24_32le,
+    [PA_SAMPLE_S32BE]     = (pa_convert_func_t) NULL, //pa_sconv_s32be_to_s24_32le,
+    [PA_SAMPLE_S32LE]     = (pa_convert_func_t) NULL, //pa_sconv_s32le_to_s24_32le,
+    [PA_SAMPLE_S24BE]     = (pa_convert_func_t) NULL, //pa_sconv_s24be_to_s24_32le,
+    [PA_SAMPLE_S24LE]     = (pa_convert_func_t) NULL, //pa_sconv_s24le_to_s24_32le,
+    [PA_SAMPLE_S24_32BE]  = (pa_convert_func_t) NULL, //pa_sconv_s24_32be_to_s24_32le,
+    [PA_SAMPLE_S24_32LE]  = (pa_convert_func_t) NULL, //pa_sconv_s24_32le_to_s24_32le,
+    [PA_SAMPLE_ALAW]      = (pa_convert_func_t) NULL, //alaw_to_s24_32le,
+    [PA_SAMPLE_ULAW]      = (pa_convert_func_t) NULL, //ulaw_to_s24_32le
+};
+
+pa_convert_func_t pa_get_convert_to_s24_32le_function(pa_sample_format_t f) {
+
+    pa_assert(f >= 0);
+    pa_assert(f < PA_SAMPLE_MAX);
+
+    return to_s24_32le_table[f];
+}
+
+void pa_set_convert_to_s24_32le_function(pa_sample_format_t f, pa_convert_func_t func) {
+
+    pa_assert(f >= 0);
+    pa_assert(f < PA_SAMPLE_MAX);
+
+    to_s24_32le_table[f] = func;
+}
+#endif

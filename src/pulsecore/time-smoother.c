@@ -24,6 +24,7 @@
 #endif
 
 #include <stdio.h>
+#include <math.h>
 
 #include <pulse/sample.h>
 #include <pulse/xmalloc.h>
@@ -38,7 +39,7 @@
  * Implementation of a time smoothing algorithm to synchronize remote
  * clocks to a local one. Evens out noise, adjusts to clock skew and
  * allows cheap estimations of the remote time while clock updates may
- * be seldom and recieved in non-equidistant intervals.
+ * be seldom and received in non-equidistant intervals.
  *
  * Basically, we estimate the gradient of received clock samples in a
  * certain history window (of size 'history_time') with linear
@@ -47,7 +48,7 @@
  * towards that point with a 3rd order polynomial interpolation with
  * fitting derivatives. (more or less a b-spline)
  *
- * The larger 'history_time' is chosen the better we will surpress
+ * The larger 'history_time' is chosen the better we will suppress
  * noise -- but we'll adjust to clock skew slower..
  *
  * The larger 'adjust_time' is chosen the smoother our estimation
@@ -82,7 +83,7 @@ struct pa_smoother {
 
     pa_bool_t monotonic:1;
     pa_bool_t paused:1;
-    pa_bool_t smoothing:1; /* If FALSE we skip the polonyomial interpolation step */
+    pa_bool_t smoothing:1; /* If FALSE we skip the polynomial interpolation step */
 
     pa_usec_t pause_time;
 
@@ -196,6 +197,13 @@ static double avg_gradient(pa_smoother *s, pa_usec_t x) {
     int64_t ax = 0, ay = 0, k, t;
     double r;
 
+    /* FIXME: Optimization: Jason Newton suggested that instead of
+     * going through the history on each iteration we could calculated
+     * avg_gradient() as we go.
+     *
+     * Second idea: it might make sense to weight history entries:
+     * more recent entries should matter more than old ones. */
+
     /* Too few measurements, assume gradient of 1 */
     if (s->n_history < s->min_history)
         return 1;
@@ -256,7 +264,7 @@ static void calc_abc(pa_smoother *s) {
 
     pa_assert(ex < px);
 
-    /* To increase the dynamic range and symplify calculation, we
+    /* To increase the dynamic range and simplify calculation, we
      * move these values to the origin */
     kx = (int64_t) px - (int64_t) ex;
     ky = (int64_t) py - (int64_t) ey;
@@ -313,10 +321,8 @@ static void estimate(pa_smoother *s, pa_usec_t x, pa_usec_t *y, double *deriv) {
 
         calc_abc(s);
 
-        tx = (double) x;
-
         /* Move to origin */
-        tx -= (double) s->ex;
+        tx = (double) (x - s->ex);
 
         /* Horner scheme */
         ty = (tx * (s->c + tx * (s->b + tx * s->a)));
@@ -380,7 +386,7 @@ void pa_smoother_put(pa_smoother *s, pa_usec_t x, pa_usec_t y) {
     s->abc_valid = FALSE;
 
 #ifdef DEBUG_DATA
-    pa_log_debug("%p, put(%llu | %llu) = %llu", s, (unsigned long long)  (x + s->time_offset), (unsigned long long) x, (unsigned long long) y);
+    pa_log_debug("%p, put(%llu | %llu) = %llu", s, (unsigned long long) (x + s->time_offset), (unsigned long long) x, (unsigned long long) y);
 #endif
 }
 
@@ -436,7 +442,7 @@ void pa_smoother_pause(pa_smoother *s, pa_usec_t x) {
         return;
 
 #ifdef DEBUG_DATA
-    pa_log_debug("pause(%llu)", (unsigned long long)  x);
+    pa_log_debug("pause(%llu)", (unsigned long long) x);
 #endif
 
     s->paused = TRUE;

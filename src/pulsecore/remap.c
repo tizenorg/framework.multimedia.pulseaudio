@@ -27,12 +27,13 @@
 #include <string.h>
 
 #include <pulse/sample.h>
+#include <pulse/volume.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
 
 #include "remap.h"
 
-static void remap_mono_to_stereo_c (pa_remap_t *m, void *dst, const void *src, unsigned n) {
+static void remap_mono_to_stereo_c(pa_remap_t *m, void *dst, const void *src, unsigned n) {
     unsigned i;
 
     switch (*m->format) {
@@ -80,12 +81,36 @@ static void remap_mono_to_stereo_c (pa_remap_t *m, void *dst, const void *src, u
             }
             break;
         }
+        /* Add signed 32bit support */
+        case PA_SAMPLE_S24_32NE:
+        case PA_SAMPLE_S32NE:
+        {
+            int32_t *d, *s;
+
+            d = (int32_t *) dst;
+            s = (int32_t *) src;
+
+            for (i = n >> 2; i; i--) {
+                d[0] = d[1] = s[0];
+                d[2] = d[3] = s[1];
+                d[4] = d[5] = s[2];
+                d[6] = d[7] = s[3];
+                s += 4;
+                d += 8;
+            }
+            for (i = n & 3; i; i--) {
+                d[0] = d[1] = s[0];
+                s++;
+                d += 2;
+            }
+            break;
+        }
         default:
             pa_assert_not_reached();
     }
 }
 
-static void remap_channels_matrix_c (pa_remap_t *m, void *dst, const void *src, unsigned n) {
+static void remap_channels_matrix_c(pa_remap_t *m, void *dst, const void *src, unsigned n) {
     unsigned oc, ic, i;
     unsigned n_ic, n_oc;
 
@@ -97,7 +122,7 @@ static void remap_channels_matrix_c (pa_remap_t *m, void *dst, const void *src, 
         {
             float *d, *s;
 
-            memset(dst, 0, n * sizeof (float) * n_oc);
+            memset(dst, 0, n * sizeof(float) * n_oc);
 
             for (oc = 0; oc < n_oc; oc++) {
 
@@ -128,7 +153,7 @@ static void remap_channels_matrix_c (pa_remap_t *m, void *dst, const void *src, 
         {
             int16_t *d, *s;
 
-            memset(dst, 0, n * sizeof (int16_t) * n_oc);
+            memset(dst, 0, n * sizeof(int16_t) * n_oc);
 
             for (oc = 0; oc < n_oc; oc++) {
 
@@ -154,13 +179,52 @@ static void remap_channels_matrix_c (pa_remap_t *m, void *dst, const void *src, 
             }
             break;
         }
+#ifdef __TIZEN__
+        /* Add signed 32bit support */
+        case PA_SAMPLE_S24_32NE:
+        case PA_SAMPLE_S32NE:
+        {
+            int32_t *d, *s;
+
+            memset(dst, 0, n * sizeof(int32_t) * n_oc);
+
+            for (oc = 0; oc < n_oc; oc++) {
+
+                for (ic = 0; ic < n_ic; ic++) {
+                    int32_t vol;
+
+                    vol = m->map_table_i[oc][ic];
+
+                    if (vol <= 0)
+                        continue;
+
+                    d = (int32_t *)dst + oc;
+                    s = (int32_t *)src + ic;
+
+                    if (vol >= 0x10000) {
+                        for (i = n; i > 0; i--, s += n_ic, d += n_oc)
+                            *d += (*s<<8)>>8;
+                    } else {
+                        for (i = n; i > 0; i--, s += n_ic, d += n_oc){
+                            /**
+                              * Sample is left shifted by 8-bits so that sign value is retained.
+                              * vol is converted from float to intiger so after multipication it is right shifted by 16-bits.
+                              */
+                            *d += (int32_t) (((int64_t)((*s<<8)>>8)* vol) >> 16);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+#endif
         default:
             pa_assert_not_reached();
     }
 }
 
 /* set the function that will execute the remapping based on the matrices */
-static void init_remap_c (pa_remap_t *m) {
+static void init_remap_c(pa_remap_t *m) {
     unsigned n_oc, n_ic;
 
     n_oc = m->o_ss->channels;
@@ -168,12 +232,12 @@ static void init_remap_c (pa_remap_t *m) {
 
     /* find some common channel remappings, fall back to full matrix operation. */
     if (n_ic == 1 && n_oc == 2 &&
-            m->map_table_f[0][0] >= 1.0 && m->map_table_f[1][0] >= 1.0) {
+            m->map_table_i[0][0] == PA_VOLUME_NORM && m->map_table_i[1][0] == PA_VOLUME_NORM) {
         m->do_remap = (pa_do_remap_func_t) remap_mono_to_stereo_c;
-        pa_log_info("Using mono to stereo remapping");
+        pa_log_info_verbose("Using mono to stereo remapping");
     } else {
         m->do_remap = (pa_do_remap_func_t) remap_channels_matrix_c;
-        pa_log_info("Using generic matrix remapping");
+        pa_log_info_verbose("Using generic matrix remapping");
     }
 }
 
@@ -181,17 +245,17 @@ static void init_remap_c (pa_remap_t *m) {
 /* default C implementation */
 static pa_init_remap_func_t remap_func = init_remap_c;
 
-void pa_init_remap (pa_remap_t *m) {
-    pa_assert (remap_func);
+void pa_init_remap(pa_remap_t *m) {
+    pa_assert(remap_func);
 
     m->do_remap = NULL;
 
     /* call the installed remap init function */
-    remap_func (m);
+    remap_func(m);
 
     if (m->do_remap == NULL) {
         /* nothing was installed, fallback to C version */
-        init_remap_c (m);
+        init_remap_c(m);
     }
 }
 

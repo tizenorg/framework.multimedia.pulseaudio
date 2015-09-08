@@ -10,15 +10,20 @@
  * Version 0.4 Leaky Normalized LMS - pre whitening algorithm
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <math.h>
 #include <string.h>
+#include <stdint.h>
 
 #include <pulse/xmalloc.h>
 
 #include "adrian-aec.h"
 
 #ifndef DISABLE_ORC
-#include "adrian-aec-orc.h"
+#include "adrian-aec-orc-gen.h"
 #endif
 
 #ifdef __SSE__
@@ -28,7 +33,7 @@
 /* Vector Dot Product */
 static REAL dotp(REAL a[], REAL b[])
 {
-  REAL sum0 = 0.0, sum1 = 0.0;
+  REAL sum0 = 0.0f, sum1 = 0.0f;
   int j;
 
   for (j = 0; j < NLMS_LEN; j += 2) {
@@ -39,7 +44,6 @@ static REAL dotp(REAL a[], REAL b[])
   return sum0 + sum1;
 }
 
-static REAL dotp_sse(REAL a[], REAL b[]) __attribute__((noinline));
 static REAL dotp_sse(REAL a[], REAL b[])
 {
 #ifdef __SSE__
@@ -66,13 +70,8 @@ static REAL dotp_sse(REAL a[], REAL b[])
 
 AEC* AEC_init(int RATE, int have_vector)
 {
-  AEC *a = pa_xnew(AEC, 1);
-  a->hangover = 0;
-  memset(a->x, 0, sizeof(a->x));
-  memset(a->xf, 0, sizeof(a->xf));
-  memset(a->w, 0, sizeof(a->w));
+  AEC *a = pa_xnew0(AEC, 1);
   a->j = NLMS_EXT;
-  a->delta = 0.0f;
   AEC_setambient(a, NoiseFloor);
   a->dfast = a->dslow = M75dB_PCM;
   a->xfast = a->xslow = M80dB_PCM;
@@ -86,15 +85,29 @@ AEC* AEC_init(int RATE, int have_vector)
   a->aes_y2 = M0dB;
 
   a->fdwdisplay = -1;
-  a->dumpcnt = 0;
-  memset(a->ws, 0, sizeof(a->ws));
 
-  if (have_vector)
+  if (have_vector) {
+      /* Get a 16-byte aligned location */
+      a->w = (REAL *) (((uintptr_t) a->w_arr) - (((uintptr_t) a->w_arr) % 16) + 16);
       a->dotp = dotp_sse;
-  else
+  } else {
+      /* We don't care about alignment, just use the array as-is */
+      a->w = a->w_arr;
       a->dotp = dotp;
+  }
 
   return a;
+}
+
+void AEC_done(AEC *a) {
+    pa_assert(a);
+
+    pa_xfree(a->Fx);
+    pa_xfree(a->Fe);
+    pa_xfree(a->acMic);
+    pa_xfree(a->acSpk);
+    pa_xfree(a->cutoff);
+    pa_xfree(a);
 }
 
 // Adrian soft decision DTD
@@ -107,8 +120,7 @@ AEC* AEC_init(int RATE, int have_vector)
 // mapped to 1.0 with a limited linear function.
 static float AEC_dtd(AEC *a, REAL d, REAL x)
 {
-  float stepsize;
-  float ratio, M;
+  float ratio, stepsize;
 
   // fast near-end and far-end average
   a->dfast += ALPHAFAST * (fabsf(d) - a->dfast);
@@ -119,26 +131,23 @@ static float AEC_dtd(AEC *a, REAL d, REAL x)
   a->xslow += ALPHASLOW * (fabsf(x) - a->xslow);
 
   if (a->xfast < M70dB_PCM) {
-    return 0.0;   // no Spk signal
+    return 0.0f;   // no Spk signal
   }
 
   if (a->dfast < M70dB_PCM) {
-    return 0.0;   // no Mic signal
+    return 0.0f;   // no Mic signal
   }
 
   // ratio of NFRs
   ratio = (a->dfast * a->xslow) / (a->dslow * a->xfast);
 
-  // begrenzte lineare Kennlinie
-  M = (STEPY2 - STEPY1) / (STEPX2 - STEPX1);
-  if (ratio < STEPX1) {
+  // Linear interpolation with clamping at the limits
+  if (ratio < STEPX1)
     stepsize = STEPY1;
-  } else if (ratio > STEPX2) {
+  else if (ratio > STEPX2)
     stepsize = STEPY2;
-  } else {
-    // Punktrichtungsform einer Geraden
-    stepsize = M * (ratio - STEPX1) + STEPY1;
-  }
+  else
+    stepsize = STEPY1 + (STEPY2 - STEPY1) * (ratio - STEPX1) / (STEPX2 - STEPX1);
 
   return stepsize;
 }
@@ -158,7 +167,7 @@ static void AEC_leaky(AEC *a)
     } else if (1 == a->hangover) {
       --(a->hangover);
       // My Leaky NLMS is to erase vector w when hangover expires
-      memset(a->w, 0, sizeof(a->w));
+      memset(a->w_arr, 0, sizeof(a->w_arr));
     }
   }
 }
@@ -190,7 +199,7 @@ static REAL AEC_nlms_pw(AEC *a, REAL d, REAL x_, float stepsize)
   // optimize: iterative dotp(xf, xf)
   a->dotp_xf_xf += (a->xf[a->j] * a->xf[a->j] - a->xf[a->j + NLMS_LEN - 1] * a->xf[a->j + NLMS_LEN - 1]);
 
-  if (stepsize > 0.0) {
+  if (stepsize > 0.0f) {
     // calculate variable step size
     REAL mikro_ef = stepsize * ef / a->dotp_xf_xf;
 

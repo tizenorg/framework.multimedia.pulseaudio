@@ -32,8 +32,6 @@
 #include <pulse/utf8.h>
 #include <pulse/xmalloc.h>
 
-#include <pulsecore/core-util.h>
-#include <pulsecore/native-common.h>
 #include <pulsecore/thread.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/log.h>
@@ -65,8 +63,9 @@ const char* pa_cstrerror(int errnum) {
     original = strerror(errnum);
 #endif
 
-    if (!original) {
-        pa_snprintf(errbuf, sizeof(errbuf), "Unknown error %i", errnum);
+    /* The second condition is a Windows-ism */
+    if (!original || !strcasecmp(original, "Unknown error")) {
+        pa_snprintf(errbuf, sizeof(errbuf), "Unknown error %d", errnum);
         original = errbuf;
     }
 

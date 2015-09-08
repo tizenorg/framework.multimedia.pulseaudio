@@ -46,13 +46,13 @@ namespace PulseAudio {
         [CCode (cname="PA_CHECK_VERSION")]
         public bool CHECK_VERSION(int major, int minor, int micro);
 
-        [CCode (cname="INVALID_INDEX")]
+        [CCode (cname="PA_INVALID_INDEX")]
         public const uint32 INVALID_INDEX;
 
-        [CCode (cname="pa_free_cb_t")]
+        [CCode (cname="pa_free_cb_t", has_target=false)]
         public delegate void FreeCb(void *p);
 
-        [CCode (cname="pa_sample_format_t", cprefix="PA_SAMPLE_")]
+        [CCode (cname="pa_sample_format_t", cprefix="PA_SAMPLE_", has_type_id=false)]
         public enum SampleFormat {
                 U8,
                 ALAW,
@@ -105,7 +105,7 @@ namespace PulseAudio {
         public struct usec : uint64 {
         }
 
-        [CCode (cname="pa_sample_spec")]
+        [CCode (cname="pa_sample_spec", has_type_id=false)]
         public struct SampleSpec {
                 public SampleFormat format;
                 public uint32 rate;
@@ -168,7 +168,7 @@ namespace PulseAudio {
                 return (string) buffer;
         }
 
-        [CCode (cname="pa_volume_t")]
+        [CCode (cname="pa_volume_t", has_type_id=false)]
         public struct Volume : uint32 {
 
                 [CCode (cname="PA_SW_VOLUME_SNPRINT_DB_MAX")]
@@ -237,13 +237,14 @@ namespace PulseAudio {
         [CCode (cname="PA_CHANNELS_MAX")]
         public const int CHANNELS_MAX;
 
-        [CCode (cname="PA_CHANNELS_MAX")]
+        [CCode (cname="PA_RATE_MAX")]
         public const int RATE_MAX;
 
-        [CCode (cname="pa_cvolume")]
+        [CCode (cname="pa_cvolume", has_type_id=false)]
         public struct CVolume {
                 public uint8 channels;
-                public Volume values[];
+                // TODO: Replace array length with CHANNELS_MAX once vala's bug #647788 is fixed
+                public Volume values[32];
 
                 [CCode (cname="PA_SW_CVOLUME_SNPRINT_DB_MAX")]
                 public static const size_t SW_SNPRINT_DB_MAX;
@@ -373,10 +374,11 @@ namespace PulseAudio {
                 public unowned CVolume? dec(Volume minus = 1);
         }
 
-        [CCode (cname="pa_channel_map")]
+        [CCode (cname="pa_channel_map", has_type_id=false)]
         public struct ChannelMap {
                 public uint8 channels;
-                public ChannelPosition map[];
+                // TODO: Replace array length with CHANNELS_MAX once vala's bug #647788 is fixed
+                public ChannelPosition map[32];
 
                 [CCode (cname="PA_CHANNEL_MAP_SNPRINT_MAX")]
                 public static const size_t SNPRINT_MAX;
@@ -446,11 +448,11 @@ namespace PulseAudio {
                 public ChannelPositionMask mask();
         }
 
-        [CCode (cname="pa_channel_position_mask_t")]
+        [CCode (cname="pa_channel_position_mask_t", has_type_id=false)]
         public struct ChannelPositionMask : uint64 {
         }
 
-        [CCode (cname="pa_channel_position_t", cprefix="PA_CHANNEL_POSITION_")]
+        [CCode (cname="pa_channel_position_t", cprefix="PA_CHANNEL_POSITION_", has_type_id=false)]
         public enum ChannelPosition {
                 INVALID,
                 MONO,
@@ -513,7 +515,7 @@ namespace PulseAudio {
                 public static ChannelPosition from_string(string s);
         }
 
-        [CCode (cname="pa_channel_map_def_t", cprefix="PA_CHANNEL_MAP_")]
+        [CCode (cname="pa_channel_map_def_t", cprefix="PA_CHANNEL_MAP_", has_type_id=false)]
         public enum ChannelMapDef {
                 AIFF,
                 WAVEEX,
@@ -525,7 +527,7 @@ namespace PulseAudio {
         }
 
         [Compact]
-        [CCode (cname="pa_proplist", cprefix="pa_proplist_", free_function="pa_proplist_free")]
+        [CCode (cname="pa_proplist", cprefix="pa_proplist_", free_function="pa_proplist_free", has_type_id=false)]
         public class Proplist {
 
                 [CCode (cname="PA_PROP_MEDIA_NAME")]
@@ -686,7 +688,7 @@ namespace PulseAudio {
                 public bool is_empty();
         }
 
-        [CCode (cname="pa_update_mode_t", cprefix="PA_UPDATE_")]
+        [CCode (cname="pa_update_mode_t", cprefix="PA_UPDATE_", has_type_id=false)]
         public enum UpdateMode {
                 SET,
                 MERGE,
@@ -696,7 +698,7 @@ namespace PulseAudio {
         [CCode (cname="PA_OK")]
         public const int OK;
 
-        [CCode (cname="int", cprefix="PA_ERR_")]
+        [CCode (cname="int", cprefix="PA_ERR_", has_type_id=false)]
         public enum Error {
                 ACCESS,
                 COMMAND,
@@ -731,14 +733,14 @@ namespace PulseAudio {
 
         public delegate void VoidFunc();
 
-        [CCode (cname="pa_spawn_api")]
+        [CCode (cname="pa_spawn_api", has_type_id=false)]
         public struct SpawnApi {
                 VoidFunc? prefork;
                 VoidFunc? postfork;
                 VoidFunc? atfork;
         }
 
-        [CCode (cname="pa_io_event_flags_t", cprefix="PA_IO_EVENT_")]
+        [CCode (cname="pa_io_event_flags_t", cprefix="PA_IO_EVENT_", has_type_id=false)]
         public enum IoEventFlags {
                 NULL,
                 INPUT,
@@ -748,22 +750,22 @@ namespace PulseAudio {
         }
 
         [Compact]
-        [CCode (cname="pa_io_event", unref_function="", ref_function="")]
+        [CCode (cname="pa_io_event", unref_function="", ref_function="", has_type_id=false)]
         public struct IoEvent {
         }
 
         [Compact]
-        [CCode (cname="pa_time_event", unref_function="", ref_function="")]
+        [CCode (cname="pa_time_event", unref_function="", ref_function="", has_type_id=false)]
         public struct TimeEvent {
         }
 
         [Compact]
-        [CCode (cname="pa_defer_event", unref_function="", ref_function="")]
+        [CCode (cname="pa_defer_event", unref_function="", ref_function="", has_type_id=false)]
         public struct DeferEvent {
         }
 
         [Compact]
-        [CCode (cname="pa_signal_event", cprefix="pa_signal_", free_function="pa_signal_free")]
+        [CCode (cname="pa_signal_event", cprefix="pa_signal_", free_function="pa_signal_free", has_type_id=false)]
         public struct SignalEvent {
 
                 [CCode (cname="pa_signal_new")]
@@ -773,7 +775,7 @@ namespace PulseAudio {
         }
 
         [Compact]
-        [CCode (cname="pa_mainloop_api", unref_function="", ref_function="")]
+        [CCode (cname="pa_mainloop_api", unref_function="", ref_function="", has_type_id=false)]
         public class MainLoopApi {
                 public void* userdata;
 
@@ -841,7 +843,7 @@ namespace PulseAudio {
         public delegate int PollFunc(pollfd[] ufds, int timeout);
 
         [Compact]
-        [CCode (cname="pa_mainloop", cprefix="pa_mainloop_", free_function="pa_mainloop_free")]
+        [CCode (cname="pa_mainloop", cprefix="pa_mainloop_", free_function="pa_mainloop_free", has_type_id=false)]
         public class MainLoop {
 
                 [CCode (cname="pa_mainloop_new")]
@@ -854,7 +856,7 @@ namespace PulseAudio {
                 public int iterate(bool block = true, out int retval = null);
                 public int run(out int retval = null);
                 public unowned MainLoopApi get_api();
-                public void quit(int r);
+                public void quit(int retval);
                 public void wakeup();
                 public void set_poll_func(PollFunc poll_func);
         }
@@ -879,20 +881,10 @@ namespace PulseAudio {
         }
 
         [Compact]
-        [CCode (cname="pa_glib_mainloop", cprefix="pa_glib_mainloop_", free_function="pa_glib_mainloop_free")]
-        public class GLibMainLoop {
-
-                [CCode (cname="pa_glib_mainloop_new")]
-                public GLibMainLoop();
-
-                public unowned MainLoopApi get_api();
-        }
-
-        [Compact]
-        [CCode (cname="pa_operation", cprefix="pa_operation_", unref_function="pa_operation_unref", ref_function="pa_operation_ref")]
+        [CCode (cname="pa_operation", cprefix="pa_operation_", unref_function="pa_operation_unref", ref_function="pa_operation_ref", has_type_id=false)]
         public class Operation {
 
-                [CCode (cname="pa_operation_state_t", cprefix="PA_OPERATION_")]
+                [CCode (cname="pa_operation_state_t", cprefix="PA_OPERATION_", has_type_id=false)]
                 public enum State {
                         RUNNING,
                         DONE,
@@ -904,16 +896,16 @@ namespace PulseAudio {
         }
 
         [Compact]
-        [CCode (cname="pa_context", cprefix="pa_context_", unref_function="pa_context_unref", ref_function="pa_context_ref")]
+        [CCode (cname="pa_context", cprefix="pa_context_", unref_function="pa_context_unref", ref_function="pa_context_ref", has_type_id=false)]
         public class Context {
 
-                [CCode (cname="pa_context_flags_t", cprefix="PA_CONTEXT_")]
+                [CCode (cname="pa_context_flags_t", cprefix="PA_CONTEXT_", has_type_id=false)]
                 public enum Flags {
                         NOAUTOSPAWN,
                         NOFAIL
                 }
 
-                [CCode (cname="pa_context_state_t", cprefix="PA_CONTEXT_")]
+                [CCode (cname="pa_context_state_t", cprefix="PA_CONTEXT_", has_type_id=false)]
                 public enum State {
                         UNCONNECTED,
                         CONNECTING,
@@ -923,11 +915,11 @@ namespace PulseAudio {
                         FAILED,
                         TERMINATED;
 
-                        [CCode (cname="PA_CONTEXT_IS_GOOD")]
+                        [CCode (cname="PA_CONTEXT_IS_GOOD", has_type_id=false)]
                         public bool IS_GOOD();
                 }
 
-                [CCode (cname="pa_subscription_mask_t", cprefix="PA_SUBSCRIPTION_MASK_")]
+                [CCode (cname="pa_subscription_mask_t", cprefix="PA_SUBSCRIPTION_MASK_", has_type_id=false)]
                 public enum SubscriptionMask {
                         NULL,
                         SINK,
@@ -945,7 +937,7 @@ namespace PulseAudio {
                         public bool match_flags(SubscriptionEventType t);
                 }
 
-                [CCode (cname="pa_subscription_event_type_t", cprefix="PA_SUBSCRIPTION_EVENT_")]
+                [CCode (cname="pa_subscription_event_type_t", cprefix="PA_SUBSCRIPTION_EVENT_", has_type_id=false)]
                 public enum SubscriptionEventType {
                         SINK,
                         SOURCE,
@@ -1024,7 +1016,7 @@ namespace PulseAudio {
                 public Operation? suspend_sink_by_index(uint32 idx, bool suspend, SuccessCb? cb = null);
 
                 public Operation? set_sink_port_by_name(string name, string port, SuccessCb? cb = null);
-                public Operation? set_sink_port_by_index(string idx, string port, SuccessCb? cb = null);
+                public Operation? set_sink_port_by_index(uint32 idx, string port, SuccessCb? cb = null);
 
                 public Operation? get_source_info_by_name(string name, SourceInfoCb cb);
                 public Operation? get_source_info_by_index(uint32 idx, SourceInfoCb cb);
@@ -1039,7 +1031,7 @@ namespace PulseAudio {
                 public Operation? suspend_source_by_index(uint32 idx, bool suspend, SuccessCb? cb = null);
 
                 public Operation? set_source_port_by_name(string name, string port, SuccessCb? cb = null);
-                public Operation? set_source_port_by_index(string idx, string port, SuccessCb? cb = null);
+                public Operation? set_source_port_by_index(uint32 idx, string port, SuccessCb? cb = null);
 
                 public Operation? get_server_info(ServerInfoCb cb);
 
@@ -1093,10 +1085,10 @@ namespace PulseAudio {
         }
 
         [Compact]
-        [CCode (cname="pa_stream", cprefix="pa_stream_", unref_function="pa_stream_unref", ref_function="pa_stream_ref")]
+        [CCode (cname="pa_stream", cprefix="pa_stream_", unref_function="pa_stream_unref", ref_function="pa_stream_ref", has_type_id=false)]
         public class Stream {
 
-                [CCode (cname="pa_stream_flags_t", cprefix="PA_STREAM_")]
+                [CCode (cname="pa_stream_flags_t", cprefix="PA_STREAM_", has_type_id=false)]
                 public enum Flags {
                         START_CORKED,
                         INTERPOLATE_TIMING,
@@ -1118,7 +1110,7 @@ namespace PulseAudio {
                         FAIL_ON_SUSPEND
                 }
 
-                [CCode (cname="pa_stream_state_t", cprefix="PA_STREAM_")]
+                [CCode (cname="pa_stream_state_t", cprefix="PA_STREAM_", has_type_id=false)]
                 public enum State {
                         UNCONNECTED,
                         CREATING,
@@ -1130,7 +1122,7 @@ namespace PulseAudio {
                         public bool IS_GOOD();
                 }
 
-                [CCode (cname="pa_stream_direction_t", cprefix="PA_STREAM_")]
+                [CCode (cname="pa_stream_direction_t", cprefix="PA_STREAM_", has_type_id=false)]
                 public enum Direction {
                         NODIRECTION,
                         PLAYBACK,
@@ -1138,7 +1130,7 @@ namespace PulseAudio {
                         UPLOAD
                 }
 
-                [CCode (cname="pa_seek_mode_t", cprefix="PA_SEEK_")]
+                [CCode (cname="pa_seek_mode_t", cprefix="PA_SEEK_", has_type_id=false)]
                 public enum SeekMode {
                         RELATIVE,
                         ABSOLUTE,
@@ -1146,7 +1138,7 @@ namespace PulseAudio {
                         RELATIVE_END
                 }
 
-                [CCode (cname="pa_buffer_attr")]
+                [CCode (cname="pa_buffer_attr", has_type_id=false)]
                 public struct BufferAttr {
                         uint32 maxlength;
                         uint32 tlength;
@@ -1155,7 +1147,7 @@ namespace PulseAudio {
                         uint32 fragsize;
                 }
 
-                [CCode (cname="pa_timing_info")]
+                [CCode (cname="pa_timing_info", has_type_id=false)]
                 public struct TimingInfo {
                         timeval timestamp;
                         int synchronized_clocks;
@@ -1194,8 +1186,8 @@ namespace PulseAudio {
                 public int is_suspended();
                 public int is_corked();
 
-                public int connect_playback(string dev, BufferAttr? a = null, Flags flags = 0, CVolume? volume = null, Stream? sync_stream = null);
-                public int connect_record(string dev, BufferAttr? a = null, Flags flags = 0);
+                public int connect_playback(string? dev = null, BufferAttr? a = null, Flags flags = 0, CVolume? volume = null, Stream? sync_stream = null);
+                public int connect_record(string? dev = null, BufferAttr? a = null, Flags flags = 0);
                 public int connect_upload(size_t length);
                 public int disconnect();
                 public int finish_upload();
@@ -1248,14 +1240,14 @@ namespace PulseAudio {
                 public uint32 get_monitor_stream();
         }
 
-        [CCode (cname="pa_sink_port_info")]
+        [CCode (cname="pa_sink_port_info", has_type_id=false)]
         public struct SinkPortInfo {
                 public string name;
                 public string description;
                 public uint32 priority;
         }
 
-        [CCode (cname="pa_sink_info")]
+        [CCode (cname="pa_sink_info", has_type_id=false)]
         public struct SinkInfo {
                 public string name;
                 public uint32 index;
@@ -1281,14 +1273,14 @@ namespace PulseAudio {
                 public SinkPortInfo* active_port;
         }
 
-        [CCode (cname="pa_source_port_info")]
+        [CCode (cname="pa_source_port_info", has_type_id=false)]
         public struct SourcePortInfo {
                 public string name;
                 public string description;
                 public uint32 priority;
         }
 
-        [CCode (cname="pa_source_info")]
+        [CCode (cname="pa_source_info", has_type_id=false)]
         public struct SourceInfo {
                 public string name;
                 public uint32 index;
@@ -1314,7 +1306,7 @@ namespace PulseAudio {
                 public SourcePortInfo* active_port;
         }
 
-        [CCode (cname="pa_server_info")]
+        [CCode (cname="pa_server_info", has_type_id=false)]
         public struct ServerInfo {
                 public string user_name;
                 public string host_name;
@@ -1326,7 +1318,7 @@ namespace PulseAudio {
                 public ChannelMap channel_map;
         }
 
-        [CCode (cname="pa_module_info")]
+        [CCode (cname="pa_module_info", has_type_id=false)]
         public struct ModuleInfo {
                 public uint32 index;
                 public string name;
@@ -1335,7 +1327,7 @@ namespace PulseAudio {
                 public Proplist proplist;
         }
 
-        [CCode (cname="pa_client_info")]
+        [CCode (cname="pa_client_info", has_type_id=false)]
         public struct ClientInfo {
                 public uint32 index;
                 public string name;
@@ -1344,7 +1336,7 @@ namespace PulseAudio {
                 public Proplist proplist;
         }
 
-        [CCode (cname="pa_card_profile_info")]
+        [CCode (cname="pa_card_profile_info", has_type_id=false)]
         public struct CardProfileInfo {
                 public string name;
                 public string description;
@@ -1353,19 +1345,19 @@ namespace PulseAudio {
                 public uint32 priority;
         }
 
-        [CCode (cname="pa_card_info")]
+        [CCode (cname="pa_card_info", has_type_id=false)]
         public struct CardInfo {
                 public uint32 index;
                 public string name;
                 public uint32 owner_module;
                 public string driver;
                 public uint32 n_profiles;
-                public CardProfileInfo profiles[];
+                public CardProfileInfo[] profiles;
                 public CardProfileInfo *active_profile;
                 public Proplist proplist;
         }
 
-        [CCode (cname="pa_sink_input_info")]
+        [CCode (cname="pa_sink_input_info", has_type_id=false)]
         public struct SinkInputInfo {
                 public uint32 index;
                 public string name;
@@ -1383,7 +1375,7 @@ namespace PulseAudio {
                 public Proplist proplist;
         }
 
-        [CCode (cname="pa_source_output_info")]
+        [CCode (cname="pa_source_output_info", has_type_id=false)]
         public struct SourceOutputInfo {
                 public uint32 index;
                 public string name;
@@ -1399,7 +1391,7 @@ namespace PulseAudio {
                 public Proplist proplist;
         }
 
-        [CCode (cname="pa_stat_info")]
+        [CCode (cname="pa_stat_info", has_type_id=false)]
         public struct StatInfo {
                 public uint32 memblock_total;
                 public uint32 memblock_total_size;
@@ -1408,7 +1400,7 @@ namespace PulseAudio {
                 public uint32 scache_size;
         }
 
-        [CCode (cname="pa_sample_info")]
+        [CCode (cname="pa_sample_info", has_type_id=false)]
         public struct SampleInfo {
                 public uint32 index;
                 public string name;
@@ -1422,7 +1414,7 @@ namespace PulseAudio {
                 public Proplist proplist;
         }
 
-        [CCode (cname="pa_sink_flags_t", cprefix="PA_SINK_")]
+        [CCode (cname="pa_sink_flags_t", cprefix="PA_SINK_", has_type_id=false)]
         public enum SinkFlags {
                 HW_VOLUME_CTRL,
                 LATENCY,
@@ -1434,7 +1426,7 @@ namespace PulseAudio {
                 DYNAMIC_LATENCY
         }
 
-        [CCode (cname="pa_source_flags_t", cprefix="PA_SOURCE_")]
+        [CCode (cname="pa_source_flags_t", cprefix="PA_SOURCE_", has_type_id=false)]
         public enum SourceFlags {
                 HW_VOLUME_CTRL,
                 LATENCY,
@@ -1445,7 +1437,7 @@ namespace PulseAudio {
                 DYNAMIC_LATENCY
         }
 
-        [CCode (cname="pa_sink_state_t", cprefix="PA_SINK_")]
+        [CCode (cname="pa_sink_state_t", cprefix="PA_SINK_", has_type_id=false)]
         public enum SinkState {
                 INVALID_STATE,
                 RUNNING,
@@ -1456,7 +1448,7 @@ namespace PulseAudio {
                 public bool IS_OPENED();
         }
 
-        [CCode (cname="pa_source_state_t", cprefix="PA_SOURCE_")]
+        [CCode (cname="pa_source_state_t", cprefix="PA_SOURCE_", has_type_id=false)]
         public enum SourceState {
                 INVALID_STATE,
                 RUNNING,

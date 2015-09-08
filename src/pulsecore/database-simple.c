@@ -25,9 +25,7 @@
 #endif
 
 #include <errno.h>
-#include <sys/stat.h>
 #include <sys/types.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
 
@@ -237,7 +235,7 @@ pa_database* pa_database_open(const char *fn, pa_bool_t for_write) {
     path = pa_sprintf_malloc("%s."CANONICAL_HOST".simple", fn);
     errno = 0;
 
-    f = fopen(path, "r");
+    f = pa_fopen_cloexec(path, "r");
 
     if (f || errno == ENOENT) { /* file not found is ok */
         db = pa_xnew0(simple_data, 1);
@@ -266,10 +264,9 @@ void pa_database_close(pa_database *database) {
     pa_assert(db);
 
     pa_database_sync(database);
-    pa_database_clear(database);
     pa_xfree(db->filename);
     pa_xfree(db->tmp_filename);
-    pa_hashmap_free(db->map, NULL, NULL);
+    pa_hashmap_free(db->map, (pa_free_cb_t) free_entry);
     pa_xfree(db);
 }
 
@@ -313,7 +310,7 @@ int pa_database_set(pa_database *database, const pa_datum *key, const pa_datum* 
             r = pa_hashmap_remove(db->map, key);
             pa_hashmap_put(db->map, &e->key, e);
         } else {
-            /* wont't overwrite, so clean new entry */
+            /* won't overwrite, so clean new entry */
             r = e;
             ret = -1;
         }
@@ -342,12 +339,10 @@ int pa_database_unset(pa_database *database, const pa_datum *key) {
 
 int pa_database_clear(pa_database *database) {
     simple_data *db = (simple_data*)database;
-    entry *e;
 
     pa_assert(db);
 
-    while ((e = pa_hashmap_steal_first(db->map)))
-        free_entry(e);
+    pa_hashmap_remove_all(db->map, (pa_free_cb_t) free_entry);
 
     return 0;
 }
@@ -429,7 +424,7 @@ static int write_uint(FILE *f, const uint32_t num) {
     errno = 0;
 
     for (i = 0; i < 4; i++)
-         values[i] = (num >> (i*8)) & 0xFF;
+        values[i] = (num >> (i*8)) & 0xFF;
 
     items = fwrite(&values, sizeof(values), sizeof(uint8_t), f);
 
@@ -480,7 +475,7 @@ int pa_database_sync(pa_database *database) {
 
     errno = 0;
 
-    f = fopen(db->tmp_filename, "w");
+    f = pa_fopen_cloexec(db->tmp_filename, "w");
 
     if (!f)
         goto fail;

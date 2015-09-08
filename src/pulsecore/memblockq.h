@@ -40,6 +40,8 @@ typedef struct pa_memblockq pa_memblockq;
 
 /* Parameters:
 
+   - name:      name for debugging purposes
+
    - idx:       start value for both read and write index
 
    - maxlength: maximum length of queue. If more data is pushed into
@@ -47,9 +49,9 @@ typedef struct pa_memblockq pa_memblockq;
 
    - tlength:   the target length of the queue. Pass 0 for the default.
 
-   - base:      a base value for all metrics. Only multiples of this value
-                are popped from the queue or should be pushed into
-                it. Must not be 0.
+   - ss:        Sample spec describing the queue contents. Only multiples
+                of the frame size as implied by the sample spec are
+                allowed into the queue or can be popped from it.
 
    - prebuf:    If the queue runs empty wait until this many bytes are in
                 queue again before passing the first byte out. If set
@@ -62,13 +64,14 @@ typedef struct pa_memblockq pa_memblockq;
 
    - maxrewind: how many bytes of history to keep in the queue
 
-   - silence:   return this memchunk when reading unitialized data
+   - silence:   return this memchunk when reading uninitialized data
 */
 pa_memblockq* pa_memblockq_new(
+        const char *name,
         int64_t idx,
         size_t maxlength,
         size_t tlength,
-        size_t base,
+        const pa_sample_spec *sample_spec,
         size_t prebuf,
         size_t minreq,
         size_t maxrewind,
@@ -161,8 +164,8 @@ int64_t pa_memblockq_get_write_index(pa_memblockq *bq);
 /* Change metrics. Always call in order. */
 void pa_memblockq_set_maxlength(pa_memblockq *memblockq, size_t maxlength); /* might modify tlength, prebuf, minreq too */
 void pa_memblockq_set_tlength(pa_memblockq *memblockq, size_t tlength); /* might modify minreq, too */
-void pa_memblockq_set_prebuf(pa_memblockq *memblockq, size_t prebuf); /* might modify minreq, too */
-void pa_memblockq_set_minreq(pa_memblockq *memblockq, size_t minreq);
+void pa_memblockq_set_minreq(pa_memblockq *memblockq, size_t minreq); /* might modify prebuf, too */
+void pa_memblockq_set_prebuf(pa_memblockq *memblockq, size_t prebuf);
 void pa_memblockq_set_maxrewind(pa_memblockq *memblockq, size_t maxrewind); /* Set the maximum history size */
 void pa_memblockq_set_silence(pa_memblockq *memblockq, pa_memchunk *silence);
 
@@ -170,7 +173,7 @@ void pa_memblockq_set_silence(pa_memblockq *memblockq, pa_memchunk *silence);
 void pa_memblockq_apply_attr(pa_memblockq *memblockq, const pa_buffer_attr *a);
 void pa_memblockq_get_attr(pa_memblockq *bq, pa_buffer_attr *a);
 
-/* Call pa_memchunk_willneed() for every chunk in the queue from the current read pointer to the end */
+/* Call pa_memchunk_will_need() for every chunk in the queue from the current read pointer to the end */
 void pa_memblockq_willneed(pa_memblockq *bq);
 
 /* Check whether the memblockq is completely empty, i.e. no data

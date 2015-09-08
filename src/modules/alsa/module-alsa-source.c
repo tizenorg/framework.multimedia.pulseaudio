@@ -32,26 +32,10 @@
 #include <valgrind/memcheck.h>
 #endif
 
-#include <pulse/xmalloc.h>
-#include <pulse/util.h>
-#include <pulse/timeval.h>
-
-#include <pulsecore/core-error.h>
-#include <pulsecore/core-rtclock.h>
-#include <pulsecore/core.h>
 #include <pulsecore/module.h>
-#include <pulsecore/memchunk.h>
-#include <pulsecore/sink.h>
 #include <pulsecore/modargs.h>
-#include <pulsecore/core-util.h>
-#include <pulsecore/sample-util.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
-#include <pulsecore/thread.h>
-#include <pulsecore/core-error.h>
-#include <pulsecore/thread-mq.h>
-#include <pulsecore/rtpoll.h>
-#include <pulsecore/time-smoother.h>
 
 #include "alsa-util.h"
 #include "alsa-source.h"
@@ -65,10 +49,12 @@ PA_MODULE_USAGE(
         "name=<name for the source, to be prefixed> "
         "source_name=<name for the source> "
         "source_properties=<properties for the source> "
+        "namereg_fail=<when false attempt to synthesise new source_name if it is already taken> "
         "device=<ALSA device> "
         "device_id=<ALSA card index> "
         "format=<sample format> "
         "rate=<sample rate> "
+        "alternate_rate=<alternate sample rate> "
         "channels=<number of channels> "
         "channel_map=<channel map> "
         "fragments=<number of fragments> "
@@ -78,16 +64,23 @@ PA_MODULE_USAGE(
         "tsched_buffer_size=<buffer size when using timer based scheduling> "
         "tsched_buffer_watermark=<upper fill watermark> "
         "ignore_dB=<ignore dB information from the device?> "
-        "control=<name of mixer control>");
+        "control=<name of mixer control>"
+        "deferred_volume=<Synchronize software and hardware volume changes to avoid momentary jumps?> "
+        "deferred_volume_safety_margin=<usec adjustment depending on volume direction> "
+        "deferred_volume_extra_delay=<usec adjustment to HW volume changes> "
+        "fixed_latency_range=<disable latency range changes on overrun?>"
+        "need_audio_pm=<indicates whether this device needs audio power management>");
 
 static const char* const valid_modargs[] = {
     "name",
     "source_name",
     "source_properties",
+    "namereg_fail",
     "device",
     "device_id",
     "format",
     "rate",
+    "alternate_rate",
     "channels",
     "channel_map",
     "fragments",
@@ -98,6 +91,14 @@ static const char* const valid_modargs[] = {
     "tsched_buffer_watermark",
     "ignore_dB",
     "control",
+    "deferred_volume",
+    "deferred_volume_safety_margin",
+    "deferred_volume_extra_delay",
+    "fixed_latency_range",
+    "need_audio_pm",
+#ifdef __TIZEN__
+    "start_threshold",
+#endif
     NULL
 };
 

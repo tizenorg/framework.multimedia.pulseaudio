@@ -33,7 +33,6 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <limits.h>
 #include <getopt.h>
 #include <locale.h>
 
@@ -41,11 +40,10 @@
 #include <sys/prctl.h>
 #endif
 
-#include <pulse/i18n.h>
 #include <pulse/pulseaudio.h>
-#include <pulsecore/macro.h>
 
-#define BUFSIZE 1024
+#include <pulsecore/i18n.h>
+#include <pulsecore/macro.h>
 
 static pa_context *context = NULL;
 static pa_mainloop_api *mainloop_api = NULL;
@@ -233,7 +231,9 @@ int main(int argc, char *argv[]) {
     };
 
     setlocale(LC_ALL, "");
+#ifdef ENABLE_NLS
     bindtextdomain(GETTEXT_PACKAGE, PULSE_LOCALEDIR);
+#endif
 
     bn = pa_path_get_filename(argv[0]);
 
@@ -292,7 +292,11 @@ int main(int argc, char *argv[]) {
     }
 
     pa_context_set_state_callback(context, context_state_callback, NULL);
-    pa_context_connect(context, server, PA_CONTEXT_NOAUTOSPAWN, NULL);
+
+    if (pa_context_connect(context, server, PA_CONTEXT_NOAUTOSPAWN, NULL) < 0) {
+        fprintf(stderr, "pa_context_connect() failed: %s\n", pa_strerror(pa_context_errno(context)));
+        goto quit;
+    }
 
     if (pa_mainloop_run(m, &ret) < 0) {
         fprintf(stderr, _("pa_mainloop_run() failed.\n"));

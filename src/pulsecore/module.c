@@ -24,14 +24,11 @@
 #include <config.h>
 #endif
 
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <ctype.h>
 
-#include <pulse/timeval.h>
 #include <pulse/xmalloc.h>
 #include <pulse/proplist.h>
 
@@ -69,7 +66,13 @@ pa_module* pa_module_load(pa_core *c, const char *name, const char *argument) {
     m->proplist = pa_proplist_new();
 
     if (!(m->dl = lt_dlopenext(name))) {
-        pa_log("Failed to open module \"%s\": %s", name, lt_dlerror());
+        /* We used to print the error that is returned by lt_dlerror(), but
+         * lt_dlerror() is useless. It returns pretty much always "file not
+         * found". That's because if there are any problems with loading the
+         * module with normal loaders, libltdl falls back to the "preload"
+         * loader, which never finds anything, and therefore says "file not
+         * found". */
+        pa_log("Failed to open module \"%s\".", name);
         goto fail;
     }
 
@@ -82,8 +85,8 @@ pa_module* pa_module_load(pa_core *c, const char *name, const char *argument) {
             uint32_t idx;
             /* OK, the module only wants to be loaded once, let's make sure it is */
 
-            for (i = pa_idxset_first(c->modules, &idx); i; i = pa_idxset_next(c->modules, &idx)) {
-                if (strcmp(name, i->name) == 0) {
+            PA_IDXSET_FOREACH(i, c->modules, idx) {
+                if (pa_streq(name, i->name)) {
                     pa_log("Module \"%s\" should be loaded once at most. Refusing to load.", name);
                     goto fail;
                 }
@@ -110,7 +113,7 @@ pa_module* pa_module_load(pa_core *c, const char *name, const char *argument) {
     m->unload_requested = FALSE;
 
     if (m->init(m) < 0) {
-        pa_log_error("Failed to load  module \"%s\" (argument: \"%s\"): initialization failed.", name, argument ? argument : "");
+        pa_log_error("Failed to load module \"%s\" (argument: \"%s\"): initialization failed.", name, argument ? argument : "");
         goto fail;
     }
 
@@ -207,10 +210,29 @@ void pa_module_unload_by_index(pa_core *c, uint32_t idx, pa_bool_t force) {
 
 void pa_module_unload_all(pa_core *c) {
     pa_module *m;
-    pa_assert(c);
+    uint32_t *indices;
+    uint32_t state;
+    int i;
 
-    while ((m = pa_idxset_steal_first(c->modules, NULL)))
-        pa_module_free(m);
+    pa_assert(c);
+    pa_assert(c->modules);
+
+    /* Unload modules in reverse order by default */
+    indices = pa_xnew(uint32_t, pa_idxset_size(c->modules));
+    i = 0;
+    PA_IDXSET_FOREACH(m, c->modules, state)
+        indices[i++] = state;
+    pa_assert(i == (int) pa_idxset_size(c->modules));
+    i--;
+    for (; i >= 0; i--) {
+        m = pa_idxset_remove_by_index(c->modules, indices[i]);
+        if (m)
+            pa_module_free(m);
+    }
+    pa_xfree(indices);
+
+    /* Just in case module unloading caused more modules to load */
+    pa_idxset_remove_all(c->modules, (pa_free_cb_t) pa_module_free);
 
     if (c->module_defer_unload_event) {
         c->mainloop->defer_free(c->module_defer_unload_event);
@@ -262,4 +284,13 @@ int pa_module_get_n_used(pa_module*m) {
         return -1;
 
     return m->get_n_used(m);
+}
+
+void pa_module_update_proplist(pa_module *m, pa_update_mode_t mode, pa_proplist *p) {
+    pa_assert(m);
+
+    if (p)
+        pa_proplist_update(m->proplist, mode, p);
+
+    pa_subscription_post(m->core, PA_SUBSCRIPTION_EVENT_MODULE|PA_SUBSCRIPTION_EVENT_CHANGE, m->index);
 }

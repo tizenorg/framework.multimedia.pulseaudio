@@ -28,9 +28,11 @@
 #include <sched.h>
 #include <errno.h>
 
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+
 #include <pulse/xmalloc.h>
-#include <pulsecore/mutex.h>
-#include <pulsecore/once.h>
 #include <pulsecore/atomic.h>
 #include <pulsecore/macro.h>
 
@@ -42,6 +44,7 @@ struct pa_thread {
     void *userdata;
     pa_atomic_t running;
     pa_bool_t joined;
+    char *name;
 };
 
 struct pa_tls {
@@ -53,9 +56,11 @@ static void thread_free_cb(void *p) {
 
     pa_assert(t);
 
-    if (!t->thread_func)
+    if (!t->thread_func) {
         /* This is a foreign thread, we need to free the struct */
+        pa_xfree(t->name);
         pa_xfree(t);
+    }
 }
 
 PA_STATIC_TLS_DECLARE(current_thread, thread_free_cb);
@@ -63,6 +68,12 @@ PA_STATIC_TLS_DECLARE(current_thread, thread_free_cb);
 static void* internal_thread_func(void *userdata) {
     pa_thread *t = userdata;
     pa_assert(t);
+
+#ifdef __linux__
+    prctl(PR_SET_NAME, t->name);
+#elif defined(HAVE_PTHREAD_SETNAME_NP) && defined(OS_IS_DARWIN)
+    pthread_setname_np(t->name);
+#endif
 
     t->id = pthread_self();
 
@@ -75,16 +86,15 @@ static void* internal_thread_func(void *userdata) {
     return NULL;
 }
 
-pa_thread* pa_thread_new(pa_thread_func_t thread_func, void *userdata) {
+pa_thread* pa_thread_new(const char *name, pa_thread_func_t thread_func, void *userdata) {
     pa_thread *t;
 
     pa_assert(thread_func);
 
-    t = pa_xnew(pa_thread, 1);
+    t = pa_xnew0(pa_thread, 1);
+    t->name = pa_xstrdup(name);
     t->thread_func = thread_func;
     t->userdata = userdata;
-    t->joined = FALSE;
-    pa_atomic_store(&t->running, 0);
 
     if (pthread_create(&t->id, NULL, internal_thread_func, t) < 0) {
         pa_xfree(t);
@@ -112,6 +122,8 @@ void pa_thread_free(pa_thread *t) {
     pa_assert(t);
 
     pa_thread_join(t);
+
+    pa_xfree(t->name);
     pa_xfree(t);
 }
 
@@ -135,10 +147,8 @@ pa_thread* pa_thread_self(void) {
     /* This is a foreign thread, let's create a pthread structure to
      * make sure that we can always return a sensible pointer */
 
-    t = pa_xnew(pa_thread, 1);
+    t = pa_xnew0(pa_thread, 1);
     t->id = pthread_self();
-    t->thread_func = NULL;
-    t->userdata = NULL;
     t->joined = TRUE;
     pa_atomic_store(&t->running, 2);
 
@@ -157,6 +167,43 @@ void pa_thread_set_data(pa_thread *t, void *userdata) {
     pa_assert(t);
 
     t->userdata = userdata;
+}
+
+void pa_thread_set_name(pa_thread *t, const char *name) {
+    pa_assert(t);
+
+    pa_xfree(t->name);
+    t->name = pa_xstrdup(name);
+
+#ifdef __linux__
+    prctl(PR_SET_NAME, name);
+#elif defined(HAVE_PTHREAD_SETNAME_NP) && defined(OS_IS_DARWIN)
+    pthread_setname_np(name);
+#endif
+}
+
+const char *pa_thread_get_name(pa_thread *t) {
+    pa_assert(t);
+
+#ifdef __linux__
+    if (!t->name) {
+        t->name = pa_xmalloc(17);
+
+        if (prctl(PR_GET_NAME, t->name) >= 0)
+            t->name[16] = 0;
+        else {
+            pa_xfree(t->name);
+            t->name = NULL;
+        }
+    }
+#elif defined(HAVE_PTHREAD_GETNAME_NP) && defined(OS_IS_DARWIN)
+    if (!t->name) {
+        t->name = pa_xmalloc0(17);
+        pthread_getname_np(t->id, t->name, 16);
+    }
+#endif
+
+    return t->name;
 }
 
 void pa_thread_yield(void) {

@@ -27,13 +27,10 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
-#include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
+#include <pulse/def.h>
 
-#include <pulsecore/core-util.h>
-#include <pulsecore/native-common.h>
+#include <pulsecore/i18n.h>
 
 #include "error.h"
 
@@ -54,7 +51,7 @@ const char*pa_strerror(int error) {
         [PA_ERR_CONNECTIONTERMINATED] = N_("Connection terminated"),
         [PA_ERR_KILLED] = N_("Entity killed"),
         [PA_ERR_INVALIDSERVER] = N_("Invalid server"),
-        [PA_ERR_MODINITFAILED] = N_("Module initalization failed"),
+        [PA_ERR_MODINITFAILED] = N_("Module initialization failed"),
         [PA_ERR_BADSTATE] = N_("Bad state"),
         [PA_ERR_NODATA] = N_("No data"),
         [PA_ERR_VERSION] = N_("Incompatible protocol version"),
@@ -67,6 +64,9 @@ const char*pa_strerror(int error) {
         [PA_ERR_FORKED] = N_("Client forked"),
         [PA_ERR_IO] = N_("Input/Output error"),
         [PA_ERR_BUSY] = N_("Device or resource busy")
+#ifdef __TIZEN__
+        ,[PA_ERR_ACCESS_BY_SECURITY] = N_("Access denied by security check")
+#endif
     };
 
     pa_init_i18n();

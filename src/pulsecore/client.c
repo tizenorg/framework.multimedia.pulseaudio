@@ -76,8 +76,9 @@ pa_client *pa_client_new(pa_core *core, pa_client_new_data *data) {
     c->send_event = NULL;
 
     pa_assert_se(pa_idxset_put(core->clients, c, &c->index) >= 0);
-
+#ifdef _DEBUG_
     pa_log_info("Created %u \"%s\"", c->index, pa_strnull(pa_proplist_gets(c->proplist, PA_PROP_APPLICATION_NAME)));
+#endif
     pa_subscription_post(core, PA_SUBSCRIPTION_EVENT_CLIENT|PA_SUBSCRIPTION_EVENT_NEW, c->index);
 
     pa_hook_fire(&core->hooks[PA_CORE_HOOK_CLIENT_PUT], c);
@@ -99,13 +100,13 @@ void pa_client_free(pa_client *c) {
 
     pa_idxset_remove_by_data(c->core->clients, c, NULL);
 
-    pa_log_info("Freed %u \"%s\"", c->index, pa_strnull(pa_proplist_gets(c->proplist, PA_PROP_APPLICATION_NAME)));
+    pa_log_info_verbose("Freed %u \"%s\"", c->index, pa_strnull(pa_proplist_gets(c->proplist, PA_PROP_APPLICATION_NAME)));
     pa_subscription_post(c->core, PA_SUBSCRIPTION_EVENT_CLIENT|PA_SUBSCRIPTION_EVENT_REMOVE, c->index);
 
     pa_assert(pa_idxset_isempty(c->sink_inputs));
-    pa_idxset_free(c->sink_inputs, NULL, NULL);
+    pa_idxset_free(c->sink_inputs, NULL);
     pa_assert(pa_idxset_isempty(c->source_outputs));
-    pa_idxset_free(c->source_outputs, NULL, NULL);
+    pa_idxset_free(c->source_outputs, NULL);
 
     pa_proplist_free(c->proplist);
     pa_xfree(c->driver);

@@ -48,14 +48,14 @@
  *                       that some implementations may block all other events
  *                       when a deferred event is active.
  * \li I/O events - Events that trigger on file descriptor activities.
- * \li Times events - Events that trigger after a fixed ammount of time.
+ * \li Times events - Events that trigger after a fixed amount of time.
  *
  * The abstraction is represented as a number of function pointers in the
  * pa_mainloop_api structure.
  *
  * To actually be able to use these functions, an implementation needs to
  * be coupled to the abstraction. There are three of these shipped with
- * PulseAudio, but any other can be used with a minimal ammount of work,
+ * PulseAudio, but any other can be used with a minimal amount of work,
  * provided it supports the three basic events listed above.
  *
  * The implementations shipped with PulseAudio are:
@@ -143,9 +143,12 @@
  */
 
 /** \file
- * Connection contexts for asynchrononous communication with a
+ * Connection contexts for asynchronous communication with a
  * server. A pa_context object wraps a connection to a PulseAudio
- * server using its native protocol. */
+ * server using its native protocol.
+ *
+ * See also \subpage async
+ */
 
 PA_C_DECL_BEGIN
 
@@ -171,7 +174,7 @@ typedef void (*pa_context_event_cb_t)(pa_context *c, const char *name, pa_propli
 pa_context *pa_context_new(pa_mainloop_api *mainloop, const char *name);
 
 /** Instantiate a new connection context with an abstract mainloop API
- * and an application name, and specify the the initial client property
+ * and an application name, and specify the initial client property
  * list. \since 0.9.11 */
 pa_context *pa_context_new_with_proplist(pa_mainloop_api *mainloop, const char *name, pa_proplist *proplist);
 
@@ -184,7 +187,7 @@ pa_context* pa_context_ref(pa_context *c);
 /** Set a callback function that is called whenever the context status changes */
 void pa_context_set_state_callback(pa_context *c, pa_context_notify_cb_t cb, void *userdata);
 
-/** Set a callback function that is called whenver a meta/policy
+/** Set a callback function that is called whenever a meta/policy
  * control event is received. \since 0.9.15 */
 void pa_context_set_event_callback(pa_context *p, pa_context_event_cb_t cb, void *userdata);
 
@@ -214,12 +217,24 @@ void pa_context_disconnect(pa_context *c);
 pa_operation* pa_context_drain(pa_context *c, pa_context_notify_cb_t cb, void *userdata);
 
 /** Tell the daemon to exit. The returned operation is unlikely to
- * complete succesfully, since the daemon probably died before
+ * complete successfully, since the daemon probably died before
  * returning a success notification */
 pa_operation* pa_context_exit_daemon(pa_context *c, pa_context_success_cb_t cb, void *userdata);
 
 /** Set the name of the default sink. */
 pa_operation* pa_context_set_default_sink(pa_context *c, const char *name, pa_context_success_cb_t cb, void *userdata);
+
+#ifdef __TIZEN__
+/** Set the api&bus of the default sink. */
+pa_operation* pa_context_set_default_sink_by_api_bus(pa_context *c, const char *api, const char *bus, pa_context_success_cb_t cb, void *userdata);
+
+/** Set the name of the default sink for USB */
+pa_operation* pa_context_set_default_sink_for_usb(pa_context *c, const char *name, pa_context_success_cb_t cb, void *userdata);
+
+/** Cork all playback stream and suspend sink manually for device switching */
+pa_operation* pa_context_set_cork_all(pa_context *c, int b, pa_context_success_cb_t cb, void *userdata);
+
+#endif /* __TIZEN__ */
 
 /** Set the name of the default source. */
 pa_operation* pa_context_set_default_source(pa_context *c, const char *name, pa_context_success_cb_t cb, void *userdata);
@@ -255,11 +270,27 @@ pa_operation *pa_context_proplist_remove(pa_context *c, const char *const keys[]
 uint32_t pa_context_get_index(pa_context *s);
 
 /** Create a new timer event source for the specified time (wrapper
-    for mainloop->time_new). \since 0.9.16 */
+ * for mainloop->time_new). \since 0.9.16 */
 pa_time_event* pa_context_rttime_new(pa_context *c, pa_usec_t usec, pa_time_event_cb_t cb, void *userdata);
-/** Restart a running or expired timer event source (wrapper
-    for mainloop->time_restart). \since 0.9.16 */
+
+/** Restart a running or expired timer event source (wrapper for
+ * mainloop->time_restart). \since 0.9.16 */
 void pa_context_rttime_restart(pa_context *c, pa_time_event *e, pa_usec_t usec);
+
+/** Return the optimal block size for passing around audio buffers. It
+ * is recommended to allocate buffers of the size returned here when
+ * writing audio data to playback streams, if the latency constraints
+ * permit this. It is not recommended writing larger blocks than this
+ * because usually they will then be split up internally into chunks
+ * of this size. It is not recommended writing smaller blocks than
+ * this (unless required due to latency demands) because this
+ * increases CPU usage. If ss is NULL you will be returned the
+ * byte-exact tile size. If you pass a valid ss, then the tile size
+ * will be rounded down to multiple of the frame size. This is
+ * supposed to be used in a construct such as
+ * pa_context_get_tile_size(pa_stream_get_context(s),
+ * pa_stream_get_sample_spec(ss)); \since 0.9.20 */
+size_t pa_context_get_tile_size(pa_context *c, const pa_sample_spec *ss);
 
 PA_C_DECL_END
 

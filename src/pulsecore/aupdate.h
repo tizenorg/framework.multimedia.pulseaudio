@@ -39,7 +39,7 @@ void pa_aupdate_write_end(pa_aupdate *a);
 
 /* Will return 0, or 1, depending which copy of the data the caller
  * should modify. Each time called this will return the opposite of
- * the previous pa_aupdate_write_begin()/pa_aupdate_write_swap()
+ * the previous pa_aupdate_write_begin() / pa_aupdate_write_swap()
  * call. Should only be called between pa_aupdate_write_begin() and
  * pa_aupdate_write_end() */
 unsigned pa_aupdate_write_swap(pa_aupdate *a);
@@ -47,10 +47,10 @@ unsigned pa_aupdate_write_swap(pa_aupdate *a);
 /*
  * This infrastructure allows lock-free updates of arbitrary data
  * structures in an rcu'ish way: two copies of the data structure
- * should be exisiting. One side ('the reader') has read access to one
+ * should be existing. One side ('the reader') has read access to one
  * of the two data structure at a time. It does not have to lock it,
  * however it needs to signal that it is using it/stopped using
- * it. The other side ('the writer') modifes the second data structure,
+ * it. The other side ('the writer') modifies the second data structure,
  * and then atomically swaps the two data structures, followed by a
  * modification of the other one.
  *

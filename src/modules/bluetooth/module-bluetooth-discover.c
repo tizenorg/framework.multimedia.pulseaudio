@@ -1,7 +1,7 @@
 /***
   This file is part of PulseAudio.
 
-  Copyright 2008-2009 Joao Paulo Rechi Vita
+  Copyright 2013 João Paulo Rechi Vita
 
   PulseAudio is free software; you can redistribute it and/or modify
   it under the terms of the GNU Lesser General Public License as
@@ -23,173 +23,158 @@
 #include <config.h>
 #endif
 
-#include <stdio.h>
-#include <stdlib.h>
-
-#include <pulse/xmalloc.h>
-#include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
-#include <pulsecore/modargs.h>
 #include <pulsecore/macro.h>
-#include <pulsecore/core-util.h>
-#include <pulsecore/dbus-shared.h>
+#include <pulsecore/module.h>
+#ifdef BLUETOOTH_APTX_SUPPORT
+#include <pulsecore/modargs.h>
+#endif
 
 #include "module-bluetooth-discover-symdef.h"
-#include "bluetooth-util.h"
 
-PA_MODULE_AUTHOR("Joao Paulo Rechi Vita");
-PA_MODULE_DESCRIPTION("Detect available bluetooth audio devices and load bluetooth audio drivers");
+PA_MODULE_AUTHOR("João Paulo Rechi Vita");
+PA_MODULE_DESCRIPTION("Detect available Bluetooth daemon and load the corresponding discovery module");
 PA_MODULE_VERSION(PACKAGE_VERSION);
-PA_MODULE_USAGE("async=<Asynchronous initialization?> "
-                "sco_sink=<name of sink> "
-                "sco_source=<name of source> ");
-PA_MODULE_LOAD_ONCE(TRUE);
+PA_MODULE_USAGE("sco_sink=<name of sink> "
+		"sco_source=<name of source> "
+#ifdef BLUETOOTH_APTX_SUPPORT
+		"aptx_lib_name=<name of aptx library name>"
+#endif
+);
+PA_MODULE_LOAD_ONCE(true);
 
 static const char* const valid_modargs[] = {
-    "sco_sink",
-    "sco_source",
-    "async",
+	"sco_sink",
+	"sco_source",
+	"async", /* deprecated */
+#ifdef BLUETOOTH_APTX_SUPPORT
+    "aptx_lib_name",
+#endif
+#ifdef __TIZEN_BT__
+    "enable_scmst",
+#endif
     NULL
 };
 
 struct userdata {
-    pa_module *module;
-    pa_modargs *modargs;
-    pa_core *core;
-    pa_bluetooth_discovery *discovery;
-    pa_hook_slot *slot;
-    pa_hashmap *hashmap;
+    uint32_t bluez5_module_idx;
+    uint32_t bluez4_module_idx;
 };
 
-struct module_info {
-    char *path;
-    uint32_t module;
-};
+static bool pa_module_exists(const char *name) {
+    const char *paths, *state = NULL;
+    char *n, *p, *pathname;
+    bool result;
 
-static pa_hook_result_t load_module_for_device(pa_bluetooth_discovery *y, const pa_bluetooth_device *d, struct userdata *u) {
-    struct module_info *mi;
+    pa_assert(name);
 
-    pa_assert(u);
-    pa_assert(d);
+    if (name[0] == PA_PATH_SEP_CHAR) {
+        result = access(name, F_OK) == 0 ? true : false;
+        pa_log_debug("Checking for existence of '%s': %s", name, result ? "success" : "failure");
+        if (result)
+            return true;
+    }
 
-    mi = pa_hashmap_get(u->hashmap, d->path);
+    if (!(paths = lt_dlgetsearchpath()))
+        return false;
 
-    if (!d->dead && d->device_connected > 0 &&
-        /*(d->audio_state >= PA_BT_AUDIO_STATE_CONNECTED ||*/
-        (d->audio_sink_state >= PA_BT_AUDIO_STATE_CONNECTED ||
-         d->audio_source_state >= PA_BT_AUDIO_STATE_CONNECTED ||
-         d->hfgw_state >= PA_BT_AUDIO_STATE_CONNECTED)) {
+    /* strip .so from the end of name, if present */
+    n = pa_xstrdup(name);
+    p = rindex(n, '.');
+    if (p && pa_streq(p, PA_SOEXT))
+        p[0] = 0;
 
-        if (!mi) {
-            pa_module *m = NULL;
-            char *args;
-
-            /* Oh, awesome, a new device has shown up and been connected! */
-
-            args = pa_sprintf_malloc("address=\"%s\" path=\"%s\"", d->address, d->path);
-#if 0
-            /* This is in case we have to use hsp immediately, without waiting for .Audio.State = Connected */
-            if (d->headset_state >= PA_BT_AUDIO_STATE_CONNECTED && somecondition) {
-                char *tmp;
-                tmp = pa_sprintf_malloc("%s profile=\"hsp\"", args);
-                pa_xfree(args);
-                args = tmp;
-            }
-#endif
-
-            if (pa_modargs_get_value(u->modargs, "sco_sink", NULL) &&
-                pa_modargs_get_value(u->modargs, "sco_source", NULL)) {
-                char *tmp;
-
-                tmp = pa_sprintf_malloc("%s sco_sink=\"%s\" sco_source=\"%s\"", args,
-                                        pa_modargs_get_value(u->modargs, "sco_sink", NULL),
-                                        pa_modargs_get_value(u->modargs, "sco_source", NULL));
-                pa_xfree(args);
-                args = tmp;
-            }
-
-            if (d->audio_source_state >= PA_BT_AUDIO_STATE_CONNECTED)
-                args = pa_sprintf_malloc("%s profile=\"a2dp_source\" auto_connect=no", args);
-
-            if (d->hfgw_state >= PA_BT_AUDIO_STATE_CONNECTED)
-                args = pa_sprintf_malloc("%s profile=\"hfgw\"", args);
-
-            if (d->audio_sink_state >= PA_BT_AUDIO_STATE_CONNECTED)
-                args = pa_sprintf_malloc("%s profile=\"a2dp\"", args);
-
-            pa_log_debug("Loading module-bluetooth-device %s", args);
-            m = pa_module_load(u->module->core, "module-bluetooth-device", args);
-            pa_xfree(args);
-
-            if (m) {
-                mi = pa_xnew(struct module_info, 1);
-                mi->module = m->index;
-                mi->path = pa_xstrdup(d->path);
-
-                pa_hashmap_put(u->hashmap, mi->path, mi);
-            } else
-                pa_log_debug("Failed to load module for device %s", d->path);
-        }
-
-    } else {
-
-        if (mi) {
-
-            /* Hmm, disconnection? Then let's unload our module */
-
-            pa_log_debug("Unloading module for %s", d->path);
-            pa_module_unload_request_by_index(u->core, mi->module, TRUE);
-
-            pa_hashmap_remove(u->hashmap, mi->path);
-            pa_xfree(mi->path);
-            pa_xfree(mi);
+    while ((p = pa_split(paths, ":", &state))) {
+        pathname = pa_sprintf_malloc("%s" PA_PATH_SEP "%s" PA_SOEXT, p, n);
+        result = access(pathname, F_OK) == 0 ? true : false;
+        pa_log_debug("Checking for existence of '%s': %s", pathname, result ? "success" : "failure");
+        pa_xfree(pathname);
+        pa_xfree(p);
+        if (result) {
+            pa_xfree(n);
+            return true;
         }
     }
 
-    return PA_HOOK_OK;
+    state = NULL;
+    if (PA_UNLIKELY(pa_run_from_build_tree())) {
+        while ((p = pa_split(paths, ":", &state))) {
+            pathname = pa_sprintf_malloc("%s" PA_PATH_SEP ".libs" PA_PATH_SEP "%s" PA_SOEXT, p, n);
+            result = access(pathname, F_OK) == 0 ? true : false;
+            pa_log_debug("Checking for existence of '%s': %s", pathname, result ? "success" : "failure");
+            pa_xfree(pathname);
+            pa_xfree(p);
+            if (result) {
+                pa_xfree(n);
+                return true;
+            }
+        }
+    }
+
+    pa_xfree(n);
+    return false;
 }
+
 
 int pa__init(pa_module* m) {
     struct userdata *u;
-    pa_modargs *ma = NULL;
-    pa_bool_t async = FALSE;
+    pa_module *mm;
 
+#ifdef BLUETOOTH_APTX_SUPPORT
+    pa_modargs *ma = NULL;
+    const char *aptx_lib_name = NULL;
+    char* args;
+#endif
     pa_assert(m);
 
+#ifdef BLUETOOTH_APTX_SUPPORT
     if (!(ma = pa_modargs_new(m->argument, valid_modargs))) {
         pa_log("Failed to parse module arguments");
-        goto fail;
+        pa__done(m);
+        return -1;
     }
 
-    if (pa_modargs_get_value_boolean(ma, "async", &async) < 0) {
-        pa_log("Failed to parse async argument.");
-        goto fail;
-    }
+    if (pa_modargs_get_value(ma, "async", NULL))
+        pa_log_warn("The 'async' argument is deprecated and does nothing.");
+
+    aptx_lib_name = pa_modargs_get_value(ma, "aptx_lib_name", NULL);
+    args =  pa_sprintf_malloc("aptx_lib_name=%s",aptx_lib_name);
+#endif
 
     m->userdata = u = pa_xnew0(struct userdata, 1);
-    u->module = m;
-    u->core = m->core;
-    u->modargs = ma;
-    ma = NULL;
-    u->hashmap = pa_hashmap_new(pa_idxset_string_hash_func, pa_idxset_string_compare_func);
+    u->bluez5_module_idx = PA_INVALID_INDEX;
+    u->bluez4_module_idx = PA_INVALID_INDEX;
 
-    if (!(u->discovery = pa_bluetooth_discovery_get(u->core)))
-        goto fail;
+    if (pa_module_exists("module-bluez5-discover")) {
+#ifdef BLUETOOTH_APTX_SUPPORT
+        mm = pa_module_load(m->core, "module-bluez5-discover", args);
+#else
+        mm = pa_module_load(m->core, "module-bluez5-discover", NULL);
+#endif
+        if (mm)
+            u->bluez5_module_idx = mm->index;
+    }
 
-    u->slot = pa_hook_connect(pa_bluetooth_discovery_hook(u->discovery), PA_HOOK_NORMAL, (pa_hook_cb_t) load_module_for_device, u);
+    if (pa_module_exists("module-bluez4-discover")) {
+        mm = pa_module_load(m->core, "module-bluez4-discover",  NULL);
+        if (mm)
+            u->bluez4_module_idx = mm->index;
+    }
 
-    if (!async)
-        pa_bluetooth_discovery_sync(u->discovery);
+    if (u->bluez5_module_idx == PA_INVALID_INDEX && u->bluez4_module_idx == PA_INVALID_INDEX) {
+        pa_xfree(u);
+#ifdef __TIZEN__
+	     pa_xfree(args);
+	     pa_modargs_free(ma);
+#endif
+        return -1;
+    }
+#ifdef __TIZEN__
+    pa_xfree(args);
+    pa_modargs_free(ma);
+#endif
 
     return 0;
-
-fail:
-    pa__done(m);
-
-    if (ma)
-        pa_modargs_free(ma);
-
-    return -1;
 }
 
 void pa__done(pa_module* m) {
@@ -200,25 +185,11 @@ void pa__done(pa_module* m) {
     if (!(u = m->userdata))
         return;
 
-    if (u->slot)
-        pa_hook_slot_free(u->slot);
+    if (u->bluez5_module_idx != PA_INVALID_INDEX)
+        pa_module_unload_by_index(m->core, u->bluez5_module_idx, true);
 
-    if (u->discovery)
-        pa_bluetooth_discovery_unref(u->discovery);
-
-    if (u->hashmap) {
-        struct module_info *mi;
-
-        while ((mi = pa_hashmap_steal_first(u->hashmap))) {
-            pa_xfree(mi->path);
-            pa_xfree(mi);
-        }
-
-        pa_hashmap_free(u->hashmap, NULL, NULL);
-    }
-
-    if (u->modargs)
-        pa_modargs_free(u->modargs);
+    if (u->bluez4_module_idx != PA_INVALID_INDEX)
+        pa_module_unload_by_index(m->core, u->bluez4_module_idx, true);
 
     pa_xfree(u);
 }

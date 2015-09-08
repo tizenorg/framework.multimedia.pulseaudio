@@ -5,7 +5,7 @@
   This file is part of PulseAudio.
 
   Copyright 2004-2006 Lennart Poettering
-  Copyright 2009 Wim Taymans <wim.taymans@collabora.co.uk> 
+  Copyright 2009 Wim Taymans <wim.taymans@collabora.co.uk>
 
   PulseAudio is free software; you can redistribute it and/or modify
   it under the terms of the GNU Lesser General Public License as published
@@ -24,6 +24,11 @@
 ***/
 
 #include <stdint.h>
+#include <pulsecore/macro.h>
+
+#ifndef PACKAGE
+#error "Please include config.h before including this file!"
+#endif
 
 typedef enum pa_cpu_arm_flag {
     PA_CPU_ARM_V6       = (1 << 0),
@@ -34,9 +39,15 @@ typedef enum pa_cpu_arm_flag {
     PA_CPU_ARM_VFPV3    = (1 << 5)
 } pa_cpu_arm_flag_t;
 
-void pa_cpu_init_arm (void);
+void pa_cpu_get_arm_flags(pa_cpu_arm_flag_t *flags);
+pa_bool_t pa_cpu_init_arm(pa_cpu_arm_flag_t *flags);
 
 /* some optimized functions */
 void pa_volume_func_init_arm(pa_cpu_arm_flag_t flags);
+
+#ifdef HAVE_NEON
+void pa_convert_func_init_neon(pa_cpu_arm_flag_t flags);
+void pa_mix_func_init_neon(pa_cpu_arm_flag_t flags);
+#endif
 
 #endif /* foocpuarmhfoo */

@@ -29,8 +29,8 @@
 #include <string.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/i18n.h>
 
+#include <pulsecore/i18n.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/bitset.h>
@@ -112,7 +112,7 @@ const char *const pretty_table[PA_CHANNEL_POSITION_MAX] = {
     [PA_CHANNEL_POSITION_REAR_LEFT] = N_("Rear Left"),
     [PA_CHANNEL_POSITION_REAR_RIGHT] = N_("Rear Right"),
 
-    [PA_CHANNEL_POSITION_LFE] = N_("Low Frequency Emmiter"),
+    [PA_CHANNEL_POSITION_LFE] = N_("Subwoofer"),
 
     [PA_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER] = N_("Front Left-of-center"),
     [PA_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER] = N_("Front Right-of-center"),
@@ -262,22 +262,31 @@ pa_channel_map* pa_channel_map_init_auto(pa_channel_map *m, unsigned channels, p
                     return m;
 
                 case 8:
+                    m->map[0] = PA_CHANNEL_POSITION_FRONT_LEFT;
+                    m->map[1] = PA_CHANNEL_POSITION_FRONT_RIGHT;
+                    m->map[2] = PA_CHANNEL_POSITION_LFE;
+                    m->map[3] = PA_CHANNEL_POSITION_FRONT_CENTER;
+                    m->map[4] = PA_CHANNEL_POSITION_REAR_LEFT;
+                    m->map[5] = PA_CHANNEL_POSITION_REAR_RIGHT;
                     m->map[6] = PA_CHANNEL_POSITION_SIDE_LEFT;
                     m->map[7] = PA_CHANNEL_POSITION_SIDE_RIGHT;
-                    /* Fall through */
+                    return m;
 
                 case 6:
-                    m->map[5] = PA_CHANNEL_POSITION_LFE;
-                    /* Fall through */
+                    m->map[0] = PA_CHANNEL_POSITION_FRONT_LEFT;
+                    m->map[1] = PA_CHANNEL_POSITION_FRONT_RIGHT;
+                    m->map[2] = PA_CHANNEL_POSITION_FRONT_CENTER;
+                    m->map[3] = PA_CHANNEL_POSITION_LFE;
+                    m->map[4] = PA_CHANNEL_POSITION_REAR_LEFT;
+                    m->map[5] = PA_CHANNEL_POSITION_REAR_RIGHT;
+                    return m;
 
                 case 5:
                     m->map[4] = PA_CHANNEL_POSITION_FRONT_CENTER;
-                    /* Fall through */
 
                 case 4:
                     m->map[2] = PA_CHANNEL_POSITION_REAR_LEFT;
                     m->map[3] = PA_CHANNEL_POSITION_REAR_RIGHT;
-                    /* Fall through */
 
                 case 2:
                     m->map[0] = PA_CHANNEL_POSITION_FRONT_LEFT;

@@ -23,8 +23,7 @@
 ***/
 
 #include <pulse/cdecl.h>
-#include <pulse/def.h>
-#include <pulse/gccmacro.h>
+#include <pulse/sample.h>
 
 /** \file
  *  Monotonic clock utilities. */
@@ -35,6 +34,7 @@ PA_C_DECL_BEGIN
  * is available.  If it is not available this will return the
  * wallclock time instead.  \since 0.9.16 */
 pa_usec_t pa_rtclock_now(void);
+pa_usec_t pa_rtclock_now_args(pa_usec_t* usec);
 
 PA_C_DECL_END
 

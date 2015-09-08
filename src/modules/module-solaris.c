@@ -28,12 +28,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
-#include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 
 #include <signal.h>
@@ -41,14 +38,12 @@
 #include <sys/conf.h>
 #include <sys/audio.h>
 
-#include <pulse/error.h>
 #include <pulse/mainloop-signal.h>
 #include <pulse/xmalloc.h>
 #include <pulse/timeval.h>
 #include <pulse/util.h>
 #include <pulse/rtclock.h>
 
-#include <pulsecore/iochannel.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/source.h>
 #include <pulsecore/module.h>
@@ -168,7 +163,10 @@ static uint64_t get_playback_buffered_bytes(struct userdata *u) {
 
     pa_smoother_put(u->smoother, pa_rtclock_now(), pa_bytes_to_usec(played_bytes, &u->sink->sample_spec));
 
-    return u->written_bytes - played_bytes;
+    if (u->written_bytes > played_bytes)
+        return u->written_bytes - played_bytes;
+    else
+        return 0;
 }
 
 static pa_usec_t sink_get_latency(struct userdata *u, pa_sample_spec *ss) {
@@ -307,8 +305,8 @@ static int auto_format(int fd, int mode, pa_sample_spec *ss) {
             info.record.encoding = AUDIO_ENCODING_LINEAR;
             break;
         default:
-             pa_log("AUDIO_SETINFO: Unsupported sample format.");
-             return -1;
+            pa_log("AUDIO_SETINFO: Unsupported sample format.");
+            return -1;
         }
     }
 
@@ -327,7 +325,7 @@ static int open_audio_device(struct userdata *u, pa_sample_spec *ss) {
     pa_assert(u);
     pa_assert(ss);
 
-    if ((u->fd = open(u->device_name, u->mode | O_NONBLOCK)) < 0) {
+    if ((u->fd = pa_open_cloexec(u->device_name, u->mode | O_NONBLOCK, 0)) < 0) {
         pa_log_warn("open %s failed (%s)", u->device_name, pa_cstrerror(errno));
         return -1;
     }
@@ -353,7 +351,7 @@ static int suspend(struct userdata *u) {
 
     pa_log_info("Suspending...");
 
-    ioctl(u->fd, AUDIO_DRAIN, NULL);
+    ioctl(u->fd, I_FLUSH, FLUSHRW);
     pa_close(u->fd);
     u->fd = -1;
 
@@ -531,7 +529,7 @@ static void source_set_volume(pa_source *s) {
     if (u->fd >= 0) {
         AUDIO_INITINFO(&info);
 
-        info.play.gain = pa_cvolume_max(&s->volume) * AUDIO_MAX_GAIN / PA_VOLUME_NORM;
+        info.play.gain = pa_cvolume_max(&s->real_volume) * AUDIO_MAX_GAIN / PA_VOLUME_NORM;
         assert(info.play.gain <= AUDIO_MAX_GAIN);
 
         if (ioctl(u->fd, AUDIO_SETINFO, &info) < 0) {
@@ -553,7 +551,7 @@ static void source_get_volume(pa_source *s) {
         if (ioctl(u->fd, AUDIO_GETINFO, &info) < 0)
             pa_log("AUDIO_SETINFO: %s", pa_cstrerror(errno));
         else
-            pa_cvolume_set(&s->volume, s->sample_spec.channels, info.play.gain * PA_VOLUME_NORM / AUDIO_MAX_GAIN);
+            pa_cvolume_set(&s->real_volume, s->sample_spec.channels, info.play.gain * PA_VOLUME_NORM / AUDIO_MAX_GAIN);
     }
 }
 
@@ -592,9 +590,12 @@ static void process_rewind(struct userdata *u) {
 
     pa_assert(u);
 
-    /* Figure out how much we shall rewind and reset the counter */
+    if (!PA_SINK_IS_OPENED(u->sink->thread_info.state)) {
+        pa_sink_process_rewind(u->sink, 0);
+        return;
+    }
+
     rewind_nbytes = u->sink->thread_info.rewind_nbytes;
-    u->sink->thread_info.rewind_nbytes = 0;
 
     if (rewind_nbytes > 0) {
         pa_log_debug("Requested to rewind %lu bytes.", (unsigned long) rewind_nbytes);
@@ -630,12 +631,12 @@ static void thread_func(void *userdata) {
     for (;;) {
         /* Render some data and write it to the dsp */
 
+        if (PA_UNLIKELY(u->sink->thread_info.rewind_requested))
+            process_rewind(u);
+
         if (u->sink && PA_SINK_IS_OPENED(u->sink->thread_info.state)) {
             pa_usec_t xtime0, ysleep_interval, xsleep_interval;
             uint64_t buffered_bytes;
-
-            if (u->sink->thread_info.rewind_requested)
-                process_rewind(u);
 
             err = ioctl(u->fd, AUDIO_GETINFO, &info);
             if (err < 0) {
@@ -938,7 +939,7 @@ int pa__init(pa_module *m) {
             goto fail;
         }
 
-        u->source = pa_source_new(m->core, &source_new_data, PA_SOURCE_HARDWARE|PA_SOURCE_LATENCY|PA_SOURCE_HW_VOLUME_CTRL);
+        u->source = pa_source_new(m->core, &source_new_data, PA_SOURCE_HARDWARE|PA_SOURCE_LATENCY);
         pa_source_new_data_done(&source_new_data);
         pa_xfree(name_buf);
 
@@ -954,8 +955,8 @@ int pa__init(pa_module *m) {
         pa_source_set_rtpoll(u->source, u->rtpoll);
         pa_source_set_fixed_latency(u->source, pa_bytes_to_usec(u->buffer_size, &u->source->sample_spec));
 
-        u->source->get_volume = source_get_volume;
-        u->source->set_volume = source_set_volume;
+        pa_source_set_get_volume_callback(u->source, source_get_volume);
+        pa_source_set_set_volume_callback(u->source, source_set_volume);
         u->source->refresh_volume = TRUE;
     } else
         u->source = NULL;
@@ -986,7 +987,7 @@ int pa__init(pa_module *m) {
             goto fail;
         }
 
-        u->sink = pa_sink_new(m->core, &sink_new_data, PA_SINK_HARDWARE|PA_SINK_LATENCY|PA_SINK_HW_VOLUME_CTRL|PA_SINK_HW_MUTE_CTRL);
+        u->sink = pa_sink_new(m->core, &sink_new_data, PA_SINK_HARDWARE|PA_SINK_LATENCY);
         pa_sink_new_data_done(&sink_new_data);
 
         pa_assert(u->sink);
@@ -999,10 +1000,10 @@ int pa__init(pa_module *m) {
         pa_sink_set_max_request(u->sink, u->buffer_size);
         pa_sink_set_max_rewind(u->sink, u->buffer_size);
 
-        u->sink->get_volume = sink_get_volume;
-        u->sink->set_volume = sink_set_volume;
-        u->sink->get_mute = sink_get_mute;
-        u->sink->set_mute = sink_set_mute;
+        pa_sink_set_get_volume_callback(u->sink, sink_get_volume);
+        pa_sink_set_set_volume_callback(u->sink, sink_set_volume);
+        pa_sink_set_get_mute_callback(u->sink, sink_get_mute);
+        pa_sink_set_set_mute_callback(u->sink, sink_set_mute);
         u->sink->refresh_volume = u->sink->refresh_muted = TRUE;
     } else
         u->sink = NULL;
@@ -1015,7 +1016,7 @@ int pa__init(pa_module *m) {
     else
         pa_log_warn("Could not register SIGPOLL handler");
 
-    if (!(u->thread = pa_thread_new(thread_func, u))) {
+    if (!(u->thread = pa_thread_new("solaris", thread_func, u))) {
         pa_log("Failed to create thread.");
         goto fail;
     }

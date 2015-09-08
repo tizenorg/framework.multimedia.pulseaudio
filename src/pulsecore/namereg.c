@@ -259,7 +259,12 @@ pa_sink* pa_namereg_set_default_sink(pa_core*c, pa_sink *s) {
 
     if (c->default_sink != s) {
         c->default_sink = s;
+#ifdef __TIZEN__
+        // we need sink index for module-poliyc:subscribe_cb
+        pa_subscription_post(c, PA_SUBSCRIPTION_EVENT_SERVER|PA_SUBSCRIPTION_EVENT_CHANGE, s != NULL ? s->index : PA_INVALID_INDEX);
+#else
         pa_subscription_post(c, PA_SUBSCRIPTION_EVENT_SERVER|PA_SUBSCRIPTION_EVENT_CHANGE, PA_INVALID_INDEX);
+#endif
     }
 
     return s;
@@ -280,23 +285,26 @@ pa_source* pa_namereg_set_default_source(pa_core*c, pa_source *s) {
 }
 
 pa_sink *pa_namereg_get_default_sink(pa_core *c) {
+#ifndef __TIZEN__
     pa_sink *s, *best = NULL;
     uint32_t idx;
+#endif
 
     pa_assert(c);
 
     if (c->default_sink && PA_SINK_IS_LINKED(pa_sink_get_state(c->default_sink)))
         return c->default_sink;
 
+#ifdef __TIZEN__
+    return pa_namereg_get(c, "null", PA_NAMEREG_SINK);
+#else
     PA_IDXSET_FOREACH(s, c->sinks, idx)
         if (PA_SINK_IS_LINKED(pa_sink_get_state(s)))
             if (!best || s->priority > best->priority)
                 best = s;
 
-    if (best)
-        return pa_namereg_set_default_sink(c, best);
-
-    return NULL;
+    return best;
+#endif /* __TIZEN__ */
 }
 
 pa_source *pa_namereg_get_default_source(pa_core *c) {
@@ -316,7 +324,7 @@ pa_source *pa_namereg_get_default_source(pa_core *c) {
                 best = s;
 
     if (best)
-        return pa_namereg_set_default_source(c, best);
+        return best;
 
     /* Then, fallback to a monitor */
     PA_IDXSET_FOREACH(s, c->sources, idx)
@@ -329,8 +337,5 @@ pa_source *pa_namereg_get_default_source(pa_core *c) {
                  s->monitor_of->priority > best->monitor_of->priority))
                 best = s;
 
-    if (best)
-        return pa_namereg_set_default_source(c, best);
-
-    return NULL;
+    return best;
 }

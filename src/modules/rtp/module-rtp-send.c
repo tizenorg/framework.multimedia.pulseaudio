@@ -26,9 +26,7 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <errno.h>
-#include <string.h>
 #include <unistd.h>
 
 #include <pulse/rtclock.h>
@@ -38,7 +36,6 @@
 
 #include <pulsecore/core-error.h>
 #include <pulsecore/module.h>
-#include <pulsecore/llist.h>
 #include <pulsecore/source.h>
 #include <pulsecore/source-output.h>
 #include <pulsecore/memblockq.h>
@@ -49,6 +46,7 @@
 #include <pulsecore/sample-util.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/socket-util.h>
+#include <pulsecore/arpa-inet.h>
 
 #include "module-rtp-send-symdef.h"
 
@@ -65,7 +63,8 @@ PA_MODULE_USAGE(
         "format=<sample format> "
         "channels=<number of channels> "
         "rate=<sample rate> "
-        "destination=<destination IP address> "
+        "destination_ip=<destination IP address> "
+        "source_ip=<source IP address> "
         "port=<port number> "
         "mtu=<maximum transfer unit> "
         "loop=<loopback to local host?> "
@@ -75,7 +74,8 @@ PA_MODULE_USAGE(
 #define DEFAULT_PORT 46000
 #define DEFAULT_TTL 1
 #define SAP_PORT 9875
-#define DEFAULT_DESTINATION "224.0.0.56"
+#define DEFAULT_SOURCE_IP "0.0.0.0"
+#define DEFAULT_DESTINATION_IP "224.0.0.56"
 #define MEMBLOCKQ_MAXLENGTH (1024*170)
 #define DEFAULT_MTU 1280
 #define SAP_INTERVAL (5*PA_USEC_PER_SEC)
@@ -85,7 +85,9 @@ static const char* const valid_modargs[] = {
     "format",
     "channels",
     "rate",
-    "destination",
+    "destination", /* Compatbility */
+    "destination_ip",
+    "source_ip",
     "port",
     "mtu" ,
     "loop",
@@ -165,7 +167,8 @@ static void sap_event_cb(pa_mainloop_api *m, pa_time_event *t, const struct time
 int pa__init(pa_module*m) {
     struct userdata *u;
     pa_modargs *ma = NULL;
-    const char *dest;
+    const char *dst_addr;
+    const char *src_addr;
     uint32_t port = DEFAULT_PORT, mtu;
     uint32_t ttl = DEFAULT_TTL;
     sa_family_t af;
@@ -173,9 +176,9 @@ int pa__init(pa_module*m) {
     pa_source *s;
     pa_sample_spec ss;
     pa_channel_map cm;
-    struct sockaddr_in sa4, sap_sa4;
+    struct sockaddr_in dst_sa4, dst_sap_sa4, src_sa4, src_sap_sa4;
 #ifdef HAVE_IPV6
-    struct sockaddr_in6 sa6, sap_sa6;
+    struct sockaddr_in6 dst_sa6, dst_sap_sa6, src_sa6, src_sap_sa6;
 #endif
     struct sockaddr_storage sa_dst;
     pa_source_output *o = NULL;
@@ -243,50 +246,89 @@ int pa__init(pa_module*m) {
         goto fail;
     }
 
-    dest = pa_modargs_get_value(ma, "destination", DEFAULT_DESTINATION);
+    src_addr = pa_modargs_get_value(ma, "source_ip", DEFAULT_SOURCE_IP);
 
-    if (inet_pton(AF_INET, dest, &sa4.sin_addr) > 0) {
-        sa4.sin_family = af = AF_INET;
-        sa4.sin_port = htons((uint16_t) port);
-        sap_sa4 = sa4;
-        sap_sa4.sin_port = htons(SAP_PORT);
+    if (inet_pton(AF_INET, src_addr, &src_sa4.sin_addr) > 0) {
+        src_sa4.sin_family = af = AF_INET;
+        src_sa4.sin_port = htons(0);
+        src_sap_sa4 = src_sa4;
 #ifdef HAVE_IPV6
-    } else if (inet_pton(AF_INET6, dest, &sa6.sin6_addr) > 0) {
-        sa6.sin6_family = af = AF_INET6;
-        sa6.sin6_port = htons((uint16_t) port);
-        sap_sa6 = sa6;
-        sap_sa6.sin6_port = htons(SAP_PORT);
+    } else if (inet_pton(AF_INET6, src_addr, &src_sa6.sin6_addr) > 0) {
+        src_sa6.sin6_family = af = AF_INET6;
+        src_sa6.sin6_port = htons(0);
+        src_sap_sa6 = src_sa6;
 #endif
     } else {
-        pa_log("Invalid destination '%s'", dest);
+        pa_log("Invalid source address '%s'", src_addr);
         goto fail;
     }
 
-    if ((fd = socket(af, SOCK_DGRAM, 0)) < 0) {
+    dst_addr = pa_modargs_get_value(ma, "destination", NULL);
+    if (dst_addr == NULL)
+        dst_addr = pa_modargs_get_value(ma, "destination_ip", DEFAULT_DESTINATION_IP);
+
+    if (inet_pton(AF_INET, dst_addr, &dst_sa4.sin_addr) > 0) {
+        dst_sa4.sin_family = af = AF_INET;
+        dst_sa4.sin_port = htons((uint16_t) port);
+        dst_sap_sa4 = dst_sa4;
+        dst_sap_sa4.sin_port = htons(SAP_PORT);
+#ifdef HAVE_IPV6
+    } else if (inet_pton(AF_INET6, dst_addr, &dst_sa6.sin6_addr) > 0) {
+        dst_sa6.sin6_family = af = AF_INET6;
+        dst_sa6.sin6_port = htons((uint16_t) port);
+        dst_sap_sa6 = dst_sa6;
+        dst_sap_sa6.sin6_port = htons(SAP_PORT);
+#endif
+    } else {
+        pa_log("Invalid destination '%s'", dst_addr);
+        goto fail;
+    }
+
+    if ((fd = pa_socket_cloexec(af, SOCK_DGRAM, 0)) < 0) {
         pa_log("socket() failed: %s", pa_cstrerror(errno));
         goto fail;
     }
 
-    if (af == AF_INET && connect(fd, (struct sockaddr*) &sa4, sizeof(sa4)) < 0) {
+    if (af == AF_INET && bind(fd, (struct sockaddr*) &src_sa4, sizeof(src_sa4)) < 0) {
+        pa_log("bind() failed: %s", pa_cstrerror(errno));
+        goto fail;
+#ifdef HAVE_IPV6
+    } else if (af == AF_INET6 && bind(fd, (struct sockaddr*) &src_sa6, sizeof(src_sa6)) < 0) {
+        pa_log("bind() failed: %s", pa_cstrerror(errno));
+        goto fail;
+#endif
+    }
+
+    if (af == AF_INET && connect(fd, (struct sockaddr*) &dst_sa4, sizeof(dst_sa4)) < 0) {
         pa_log("connect() failed: %s", pa_cstrerror(errno));
         goto fail;
 #ifdef HAVE_IPV6
-    } else if (af == AF_INET6 && connect(fd, (struct sockaddr*) &sa6, sizeof(sa6)) < 0) {
+    } else if (af == AF_INET6 && connect(fd, (struct sockaddr*) &dst_sa6, sizeof(dst_sa6)) < 0) {
         pa_log("connect() failed: %s", pa_cstrerror(errno));
         goto fail;
 #endif
     }
 
-    if ((sap_fd = socket(af, SOCK_DGRAM, 0)) < 0) {
+    if ((sap_fd = pa_socket_cloexec(af, SOCK_DGRAM, 0)) < 0) {
         pa_log("socket() failed: %s", pa_cstrerror(errno));
         goto fail;
     }
 
-    if (af == AF_INET && connect(sap_fd, (struct sockaddr*) &sap_sa4, sizeof(sap_sa4)) < 0) {
+    if (af == AF_INET && bind(sap_fd, (struct sockaddr*) &src_sap_sa4, sizeof(src_sap_sa4)) < 0) {
+        pa_log("bind() failed: %s", pa_cstrerror(errno));
+        goto fail;
+#ifdef HAVE_IPV6
+    } else if (af == AF_INET6 && bind(sap_fd, (struct sockaddr*) &src_sap_sa6, sizeof(src_sap_sa6)) < 0) {
+        pa_log("bind() failed: %s", pa_cstrerror(errno));
+        goto fail;
+#endif
+    }
+
+    if (af == AF_INET && connect(sap_fd, (struct sockaddr*) &dst_sap_sa4, sizeof(dst_sap_sa4)) < 0) {
         pa_log("connect() failed: %s", pa_cstrerror(errno));
         goto fail;
 #ifdef HAVE_IPV6
-    } else if (af == AF_INET6 && connect(sap_fd, (struct sockaddr*) &sap_sa6, sizeof(sap_sa6)) < 0) {
+    } else if (af == AF_INET6 && connect(sap_fd, (struct sockaddr*) &dst_sap_sa6, sizeof(dst_sap_sa6)) < 0) {
         pa_log("connect() failed: %s", pa_cstrerror(errno));
         goto fail;
 #endif
@@ -316,18 +358,17 @@ int pa__init(pa_module*m) {
     /* If the socket queue is full, let's drop packets */
     pa_make_fd_nonblock(fd);
     pa_make_udp_socket_low_delay(fd);
-    pa_make_fd_cloexec(fd);
-    pa_make_fd_cloexec(sap_fd);
 
     pa_source_output_new_data_init(&data);
     pa_proplist_sets(data.proplist, PA_PROP_MEDIA_NAME, "RTP Monitor Stream");
-    pa_proplist_sets(data.proplist, "rtp.destination", dest);
+    pa_proplist_sets(data.proplist, "rtp.source", src_addr);
+    pa_proplist_sets(data.proplist, "rtp.destination", dst_addr);
     pa_proplist_setf(data.proplist, "rtp.mtu", "%lu", (unsigned long) mtu);
     pa_proplist_setf(data.proplist, "rtp.port", "%lu", (unsigned long) port);
     pa_proplist_setf(data.proplist, "rtp.ttl", "%lu", (unsigned long) ttl);
     data.driver = __FILE__;
     data.module = m;
-    data.source = s;
+    pa_source_output_new_data_set_source(&data, s, FALSE);
     pa_source_output_new_data_set_sample_spec(&data, &ss);
     pa_source_output_new_data_set_channel_map(&data, &cm);
     data.flags = PA_SOURCE_OUTPUT_DONT_INHIBIT_AUTO_SUSPEND;
@@ -352,10 +393,11 @@ int pa__init(pa_module*m) {
     u->source_output = o;
 
     u->memblockq = pa_memblockq_new(
+            "module-rtp-send memblockq",
             0,
             MEMBLOCKQ_MAXLENGTH,
             MEMBLOCKQ_MAXLENGTH,
-            pa_frame_size(&ss),
+            &ss,
             1,
             0,
             0,
@@ -371,13 +413,13 @@ int pa__init(pa_module*m) {
     if (af == AF_INET) {
         p = pa_sdp_build(af,
                      (void*) &((struct sockaddr_in*) &sa_dst)->sin_addr,
-                     (void*) &sa4.sin_addr,
+                     (void*) &dst_sa4.sin_addr,
                      n, (uint16_t) port, payload, &ss);
 #ifdef HAVE_IPV6
     } else {
         p = pa_sdp_build(af,
                      (void*) &((struct sockaddr_in6*) &sa_dst)->sin6_addr,
-                     (void*) &sa6.sin6_addr,
+                     (void*) &dst_sa6.sin6_addr,
                      n, (uint16_t) port, payload, &ss);
 #endif
     }
@@ -387,7 +429,7 @@ int pa__init(pa_module*m) {
     pa_rtp_context_init_send(&u->rtp_context, fd, m->core->cookie, payload, pa_frame_size(&ss));
     pa_sap_context_init_send(&u->sap_context, sap_fd, p);
 
-    pa_log_info("RTP stream initialized with mtu %u on %s:%u ttl=%u, SSRC=0x%08x, payload=%u, initial sequence #%u", mtu, dest, port, ttl, u->rtp_context.ssrc, payload, u->rtp_context.sequence);
+    pa_log_info("RTP stream initialized with mtu %u on %s:%u from %s ttl=%u, SSRC=0x%08x, payload=%u, initial sequence #%u", mtu, dst_addr, port, src_addr, ttl, u->rtp_context.ssrc, payload, u->rtp_context.sequence);
     pa_log_info("SDP-Data:\n%s\nEOF", p);
 
     pa_sap_send(&u->sap_context, 0);

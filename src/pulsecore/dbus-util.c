@@ -28,6 +28,7 @@
 
 #include <pulse/rtclock.h>
 #include <pulse/timeval.h>
+#include <pulse/utf8.h>
 #include <pulse/xmalloc.h>
 
 #include <pulsecore/core-rtclock.h>
@@ -44,17 +45,16 @@ struct pa_dbus_wrap_connection {
 };
 
 struct timeout_data {
-    pa_dbus_wrap_connection *c;
+    pa_dbus_wrap_connection *connection;
     DBusTimeout *timeout;
 };
 
 static void dispatch_cb(pa_mainloop_api *ea, pa_defer_event *ev, void *userdata) {
     DBusConnection *conn = userdata;
 
-    if (dbus_connection_dispatch(conn) == DBUS_DISPATCH_COMPLETE) {
+    if (dbus_connection_dispatch(conn) == DBUS_DISPATCH_COMPLETE)
         /* no more data to process, disable the deferred */
         ea->defer_enable(ev, 0);
-    }
 }
 
 /* DBusDispatchStatusFunction callback for the pa mainloop */
@@ -131,13 +131,17 @@ static void handle_time_event(pa_mainloop_api *ea, pa_time_event* e, const struc
     struct timeout_data *d = userdata;
 
     pa_assert(d);
-    pa_assert(d->c);
+    pa_assert(d->connection);
 
     if (dbus_timeout_get_enabled(d->timeout)) {
-        dbus_timeout_handle(d->timeout);
+        /* Restart it for the next scheduled time. We do this before
+         * calling dbus_timeout_handle() to make sure that the time
+         * event is still around. */
+        ea->time_restart(e, pa_timeval_rtstore(&tv,
+                                               pa_timeval_load(t) + dbus_timeout_get_interval(d->timeout) * PA_USEC_PER_MSEC,
+                                               d->connection->use_rtclock));
 
-        /* restart it for the next scheduled time */
-        ea->time_restart(e, pa_timeval_rtstore(&tv, pa_timeval_load(t) + dbus_timeout_get_interval(d->timeout) * PA_USEC_PER_MSEC, d->c->use_rtclock));
+        dbus_timeout_handle(d->timeout);
     }
 }
 
@@ -207,7 +211,7 @@ static dbus_bool_t add_timeout(DBusTimeout *timeout, void *data) {
         return FALSE;
 
     d = pa_xnew(struct timeout_data, 1);
-    d->c = c;
+    d->connection = c;
     d->timeout = timeout;
     ev = c->mainloop->time_new(c->mainloop, pa_timeval_rtstore(&tv, pa_rtclock_now() + dbus_timeout_get_interval(timeout) * PA_USEC_PER_MSEC, c->use_rtclock), handle_time_event, d);
     c->mainloop->time_set_destroy(ev, time_event_destroy_cb);
@@ -236,15 +240,15 @@ static void toggle_timeout(DBusTimeout *timeout, void *data) {
     struct timeval tv;
 
     pa_assert(d);
-    pa_assert(d->c);
+    pa_assert(d->connection);
     pa_assert(timeout);
 
     pa_assert_se(ev = dbus_timeout_get_data(timeout));
 
-    if (dbus_timeout_get_enabled(timeout)) {
-        d->c->mainloop->time_restart(ev, pa_timeval_rtstore(&tv, pa_rtclock_now() + dbus_timeout_get_interval(timeout) * PA_USEC_PER_MSEC, d->c->use_rtclock));
-    } else
-        d->c->mainloop->time_restart(ev, pa_timeval_rtstore(&tv, PA_USEC_INVALID, d->c->use_rtclock));
+    if (dbus_timeout_get_enabled(timeout))
+        d->connection->mainloop->time_restart(ev, pa_timeval_rtstore(&tv, pa_rtclock_now() + dbus_timeout_get_interval(timeout) * PA_USEC_PER_MSEC, d->connection->use_rtclock));
+    else
+        d->connection->mainloop->time_restart(ev, pa_timeval_rtstore(&tv, PA_USEC_INVALID, d->connection->use_rtclock));
 }
 
 static void wakeup_main(void *userdata) {
@@ -286,6 +290,31 @@ pa_dbus_wrap_connection* pa_dbus_wrap_connection_new(pa_mainloop_api *m, pa_bool
                  pa_strnull(dbus_bus_get_unique_name(conn)));
 
     dbus_free(id);
+
+    return pconn;
+}
+
+pa_dbus_wrap_connection* pa_dbus_wrap_connection_new_from_existing(
+        pa_mainloop_api *m,
+        pa_bool_t use_rtclock,
+        DBusConnection *conn) {
+    pa_dbus_wrap_connection *pconn;
+
+    pa_assert(m);
+    pa_assert(conn);
+
+    pconn = pa_xnew(pa_dbus_wrap_connection, 1);
+    pconn->mainloop = m;
+    pconn->connection = dbus_connection_ref(conn);
+    pconn->use_rtclock = use_rtclock;
+
+    dbus_connection_set_exit_on_disconnect(conn, FALSE);
+    dbus_connection_set_dispatch_status_function(conn, dispatch_status, pconn, NULL);
+    dbus_connection_set_watch_functions(conn, add_watch, remove_watch, toggle_watch, pconn, NULL);
+    dbus_connection_set_timeout_functions(conn, add_timeout, remove_timeout, toggle_timeout, pconn, NULL);
+    dbus_connection_set_wakeup_main_function(conn, wakeup_main, pconn, NULL);
+
+    pconn->dispatch_event = pconn->mainloop->defer_new(pconn->mainloop, dispatch_cb, conn);
 
     return pconn;
 }
@@ -338,13 +367,8 @@ fail:
     va_end(ap);
     va_start(ap, error);
     for (; k > 0; k--) {
-        DBusError e;
-
         pa_assert_se(t = va_arg(ap, const char*));
-
-        dbus_error_init(&e);
-        dbus_bus_remove_match(c, t, &e);
-        dbus_error_free(&e);
+        dbus_bus_remove_match(c, t, NULL);
     }
     va_end(ap);
 
@@ -354,17 +378,12 @@ fail:
 void pa_dbus_remove_matches(DBusConnection *c, ...) {
     const char *t;
     va_list ap;
-    DBusError error;
 
     pa_assert(c);
 
-    dbus_error_init(&error);
-
     va_start(ap, c);
-    while ((t = va_arg(ap, const char*))) {
-        dbus_bus_remove_match(c, t, &error);
-        dbus_error_free(&error);
-    }
+    while ((t = va_arg(ap, const char*)))
+        dbus_bus_remove_match(c, t, NULL);
     va_end(ap);
 }
 
@@ -437,23 +456,50 @@ const char *pa_dbus_get_error_message(DBusMessage *m) {
     return message;
 }
 
-/* Note: returns sizeof(char*) for strings, object paths and signatures. */
-static unsigned basic_type_size(int type) {
-    switch (type) {
-        case DBUS_TYPE_BOOLEAN: return sizeof(dbus_bool_t);
-        case DBUS_TYPE_BYTE: return 1;
-        case DBUS_TYPE_INT16: return sizeof(dbus_int16_t);
-        case DBUS_TYPE_UINT16: return sizeof(dbus_uint16_t);
-        case DBUS_TYPE_INT32: return sizeof(dbus_int32_t);
-        case DBUS_TYPE_UINT32: return sizeof(dbus_uint32_t);
-        case DBUS_TYPE_INT64: return sizeof(dbus_int64_t);
-        case DBUS_TYPE_UINT64: return sizeof(dbus_uint64_t);
-        case DBUS_TYPE_DOUBLE: return sizeof(double);
-        case DBUS_TYPE_STRING:
-        case DBUS_TYPE_OBJECT_PATH:
-        case DBUS_TYPE_SIGNATURE: return sizeof(char*);
-        default: pa_assert_not_reached();
-    }
+void pa_dbus_send_error(DBusConnection *c, DBusMessage *in_reply_to, const char *name, const char *format, ...) {
+    va_list ap;
+    char *message;
+    DBusMessage *reply = NULL;
+
+    pa_assert(c);
+    pa_assert(in_reply_to);
+    pa_assert(name);
+    pa_assert(format);
+
+    va_start(ap, format);
+    message = pa_vsprintf_malloc(format, ap);
+    va_end(ap);
+    pa_assert_se((reply = dbus_message_new_error(in_reply_to, name, message)));
+    pa_assert_se(dbus_connection_send(c, reply, NULL));
+
+    dbus_message_unref(reply);
+
+    pa_xfree(message);
+}
+
+void pa_dbus_send_empty_reply(DBusConnection *c, DBusMessage *in_reply_to) {
+    DBusMessage *reply = NULL;
+
+    pa_assert(c);
+    pa_assert(in_reply_to);
+
+    pa_assert_se((reply = dbus_message_new_method_return(in_reply_to)));
+    pa_assert_se(dbus_connection_send(c, reply, NULL));
+    dbus_message_unref(reply);
+}
+
+void pa_dbus_send_basic_value_reply(DBusConnection *c, DBusMessage *in_reply_to, int type, void *data) {
+    DBusMessage *reply = NULL;
+
+    pa_assert(c);
+    pa_assert(in_reply_to);
+    pa_assert(dbus_type_is_basic(type));
+    pa_assert(data);
+
+    pa_assert_se((reply = dbus_message_new_method_return(in_reply_to)));
+    pa_assert_se(dbus_message_append_args(reply, type, data, DBUS_TYPE_INVALID));
+    pa_assert_se(dbus_connection_send(c, reply, NULL));
+    dbus_message_unref(reply);
 }
 
 static const char *signature_from_basic_type(int type) {
@@ -474,16 +520,81 @@ static const char *signature_from_basic_type(int type) {
     }
 }
 
-void pa_dbus_append_basic_variant(DBusMessageIter *iter, int type, void *data) {
+void pa_dbus_send_basic_variant_reply(DBusConnection *c, DBusMessage *in_reply_to, int type, void *data) {
+    DBusMessage *reply = NULL;
+    DBusMessageIter msg_iter;
     DBusMessageIter variant_iter;
 
-    pa_assert(iter);
+    pa_assert(c);
+    pa_assert(in_reply_to);
     pa_assert(dbus_type_is_basic(type));
     pa_assert(data);
 
-    pa_assert_se(dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, signature_from_basic_type(type), &variant_iter));
+    pa_assert_se((reply = dbus_message_new_method_return(in_reply_to)));
+    dbus_message_iter_init_append(reply, &msg_iter);
+    pa_assert_se(dbus_message_iter_open_container(&msg_iter,
+                                                  DBUS_TYPE_VARIANT,
+                                                  signature_from_basic_type(type),
+                                                  &variant_iter));
     pa_assert_se(dbus_message_iter_append_basic(&variant_iter, type, data));
-    pa_assert_se(dbus_message_iter_close_container(iter, &variant_iter));
+    pa_assert_se(dbus_message_iter_close_container(&msg_iter, &variant_iter));
+    pa_assert_se(dbus_connection_send(c, reply, NULL));
+    dbus_message_unref(reply);
+}
+
+/* Note: returns sizeof(char*) for strings, object paths and signatures. */
+static unsigned basic_type_size(int type) {
+    switch (type) {
+        case DBUS_TYPE_BOOLEAN: return sizeof(dbus_bool_t);
+        case DBUS_TYPE_BYTE: return 1;
+        case DBUS_TYPE_INT16: return sizeof(dbus_int16_t);
+        case DBUS_TYPE_UINT16: return sizeof(dbus_uint16_t);
+        case DBUS_TYPE_INT32: return sizeof(dbus_int32_t);
+        case DBUS_TYPE_UINT32: return sizeof(dbus_uint32_t);
+        case DBUS_TYPE_INT64: return sizeof(dbus_int64_t);
+        case DBUS_TYPE_UINT64: return sizeof(dbus_uint64_t);
+        case DBUS_TYPE_DOUBLE: return sizeof(double);
+        case DBUS_TYPE_STRING:
+        case DBUS_TYPE_OBJECT_PATH:
+        case DBUS_TYPE_SIGNATURE: return sizeof(char*);
+        default: pa_assert_not_reached();
+    }
+}
+
+void pa_dbus_send_basic_array_variant_reply(
+        DBusConnection *c,
+        DBusMessage *in_reply_to,
+        int item_type,
+        void *array,
+        unsigned n) {
+    DBusMessage *reply = NULL;
+    DBusMessageIter msg_iter;
+
+    pa_assert(c);
+    pa_assert(in_reply_to);
+    pa_assert(dbus_type_is_basic(item_type));
+    pa_assert(array || n == 0);
+
+    pa_assert_se((reply = dbus_message_new_method_return(in_reply_to)));
+    dbus_message_iter_init_append(reply, &msg_iter);
+    pa_dbus_append_basic_array_variant(&msg_iter, item_type, array, n);
+    pa_assert_se(dbus_connection_send(c, reply, NULL));
+    dbus_message_unref(reply);
+}
+
+void pa_dbus_send_proplist_variant_reply(DBusConnection *c, DBusMessage *in_reply_to, pa_proplist *proplist) {
+    DBusMessage *reply = NULL;
+    DBusMessageIter msg_iter;
+
+    pa_assert(c);
+    pa_assert(in_reply_to);
+    pa_assert(proplist);
+
+    pa_assert_se((reply = dbus_message_new_method_return(in_reply_to)));
+    dbus_message_iter_init_append(reply, &msg_iter);
+    pa_dbus_append_proplist_variant(&msg_iter, proplist);
+    pa_assert_se(dbus_connection_send(c, reply, NULL));
+    dbus_message_unref(reply);
 }
 
 void pa_dbus_append_basic_array(DBusMessageIter *iter, int item_type, const void *array, unsigned n) {
@@ -505,18 +616,16 @@ void pa_dbus_append_basic_array(DBusMessageIter *iter, int item_type, const void
     pa_assert_se(dbus_message_iter_close_container(iter, &array_iter));
 }
 
-void pa_dbus_append_basic_variant_dict_entry(DBusMessageIter *dict_iter, const char *key, int type, void *data) {
-    DBusMessageIter dict_entry_iter;
+void pa_dbus_append_basic_variant(DBusMessageIter *iter, int type, void *data) {
+    DBusMessageIter variant_iter;
 
-    pa_assert(dict_iter);
-    pa_assert(key);
+    pa_assert(iter);
     pa_assert(dbus_type_is_basic(type));
     pa_assert(data);
 
-    pa_assert_se(dbus_message_iter_open_container(dict_iter, DBUS_TYPE_DICT_ENTRY, NULL, &dict_entry_iter));
-    pa_assert_se(dbus_message_iter_append_basic(&dict_entry_iter, DBUS_TYPE_STRING, &key));
-    pa_dbus_append_basic_variant(&dict_entry_iter, type, data);
-    pa_assert_se(dbus_message_iter_close_container(dict_iter, &dict_entry_iter));
+    pa_assert_se(dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, signature_from_basic_type(type), &variant_iter));
+    pa_assert_se(dbus_message_iter_append_basic(&variant_iter, type, data));
+    pa_assert_se(dbus_message_iter_close_container(iter, &variant_iter));
 }
 
 void pa_dbus_append_basic_array_variant(DBusMessageIter *iter, int item_type, const void *array, unsigned n) {
@@ -536,6 +645,20 @@ void pa_dbus_append_basic_array_variant(DBusMessageIter *iter, int item_type, co
     pa_xfree(array_signature);
 }
 
+void pa_dbus_append_basic_variant_dict_entry(DBusMessageIter *dict_iter, const char *key, int type, void *data) {
+    DBusMessageIter dict_entry_iter;
+
+    pa_assert(dict_iter);
+    pa_assert(key);
+    pa_assert(dbus_type_is_basic(type));
+    pa_assert(data);
+
+    pa_assert_se(dbus_message_iter_open_container(dict_iter, DBUS_TYPE_DICT_ENTRY, NULL, &dict_entry_iter));
+    pa_assert_se(dbus_message_iter_append_basic(&dict_entry_iter, DBUS_TYPE_STRING, &key));
+    pa_dbus_append_basic_variant(&dict_entry_iter, type, data);
+    pa_assert_se(dbus_message_iter_close_container(dict_iter, &dict_entry_iter));
+}
+
 void pa_dbus_append_basic_array_variant_dict_entry(
         DBusMessageIter *dict_iter,
         const char *key,
@@ -553,4 +676,108 @@ void pa_dbus_append_basic_array_variant_dict_entry(
     pa_assert_se(dbus_message_iter_append_basic(&dict_entry_iter, DBUS_TYPE_STRING, &key));
     pa_dbus_append_basic_array_variant(&dict_entry_iter, item_type, array, n);
     pa_assert_se(dbus_message_iter_close_container(dict_iter, &dict_entry_iter));
+}
+
+void pa_dbus_append_proplist(DBusMessageIter *iter, pa_proplist *proplist) {
+    DBusMessageIter dict_iter;
+    DBusMessageIter dict_entry_iter;
+    DBusMessageIter array_iter;
+    void *state = NULL;
+    const char *key;
+
+    pa_assert(iter);
+    pa_assert(proplist);
+
+    pa_assert_se(dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY, "{say}", &dict_iter));
+
+    while ((key = pa_proplist_iterate(proplist, &state))) {
+        const void *value = NULL;
+        size_t nbytes;
+
+        pa_assert_se(pa_proplist_get(proplist, key, &value, &nbytes) >= 0);
+
+        pa_assert_se(dbus_message_iter_open_container(&dict_iter, DBUS_TYPE_DICT_ENTRY, NULL, &dict_entry_iter));
+
+        pa_assert_se(dbus_message_iter_append_basic(&dict_entry_iter, DBUS_TYPE_STRING, &key));
+
+        pa_assert_se(dbus_message_iter_open_container(&dict_entry_iter, DBUS_TYPE_ARRAY, "y", &array_iter));
+        pa_assert_se(dbus_message_iter_append_fixed_array(&array_iter, DBUS_TYPE_BYTE, &value, nbytes));
+        pa_assert_se(dbus_message_iter_close_container(&dict_entry_iter, &array_iter));
+
+        pa_assert_se(dbus_message_iter_close_container(&dict_iter, &dict_entry_iter));
+    }
+
+    pa_assert_se(dbus_message_iter_close_container(iter, &dict_iter));
+}
+
+void pa_dbus_append_proplist_variant(DBusMessageIter *iter, pa_proplist *proplist) {
+    DBusMessageIter variant_iter;
+
+    pa_assert(iter);
+    pa_assert(proplist);
+
+    pa_assert_se(dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, "a{say}", &variant_iter));
+    pa_dbus_append_proplist(&variant_iter, proplist);
+    pa_assert_se(dbus_message_iter_close_container(iter, &variant_iter));
+}
+
+void pa_dbus_append_proplist_variant_dict_entry(DBusMessageIter *dict_iter, const char *key, pa_proplist *proplist) {
+    DBusMessageIter dict_entry_iter;
+
+    pa_assert(dict_iter);
+    pa_assert(key);
+    pa_assert(proplist);
+
+    pa_assert_se(dbus_message_iter_open_container(dict_iter, DBUS_TYPE_DICT_ENTRY, NULL, &dict_entry_iter));
+    pa_assert_se(dbus_message_iter_append_basic(&dict_entry_iter, DBUS_TYPE_STRING, &key));
+    pa_dbus_append_proplist_variant(&dict_entry_iter, proplist);
+    pa_assert_se(dbus_message_iter_close_container(dict_iter, &dict_entry_iter));
+}
+
+pa_proplist *pa_dbus_get_proplist_arg(DBusConnection *c, DBusMessage *msg, DBusMessageIter *iter) {
+    DBusMessageIter dict_iter;
+    DBusMessageIter dict_entry_iter;
+    pa_proplist *proplist = NULL;
+    const char *key = NULL;
+    const uint8_t *value = NULL;
+    int value_length = 0;
+
+    pa_assert(c);
+    pa_assert(msg);
+    pa_assert(iter);
+    pa_assert(pa_streq(dbus_message_iter_get_signature(iter), "a{say}"));
+
+    proplist = pa_proplist_new();
+
+    dbus_message_iter_recurse(iter, &dict_iter);
+
+    while (dbus_message_iter_get_arg_type(&dict_iter) != DBUS_TYPE_INVALID) {
+        dbus_message_iter_recurse(&dict_iter, &dict_entry_iter);
+
+        dbus_message_iter_get_basic(&dict_entry_iter, &key);
+        dbus_message_iter_next(&dict_entry_iter);
+
+        if (strlen(key) <= 0 || !pa_ascii_valid(key)) {
+            pa_dbus_send_error(c, msg, DBUS_ERROR_INVALID_ARGS, "Invalid property list key: '%s'.", key);
+            goto fail;
+        }
+
+        dbus_message_iter_get_fixed_array(&dict_entry_iter, &value, &value_length);
+
+        pa_assert(value_length >= 0);
+
+        pa_assert_se(pa_proplist_set(proplist, key, value, value_length) >= 0);
+
+        dbus_message_iter_next(&dict_iter);
+    }
+
+    dbus_message_iter_next(iter);
+
+    return proplist;
+
+fail:
+    if (proplist)
+        pa_proplist_free(proplist);
+
+    return NULL;
 }

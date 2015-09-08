@@ -23,9 +23,14 @@
   USA.
 ***/
 
+#include <inttypes.h>
+#include <limits.h>
+
+#include <pulse/gccmacro.h>
 #include <pulse/sample.h>
 #include <pulse/volume.h>
 #include <pulse/channelmap.h>
+
 #include <pulsecore/memblock.h>
 #include <pulsecore/memchunk.h>
 
@@ -42,34 +47,6 @@ pa_memblock* pa_silence_memblock(pa_memblock *b, const pa_sample_spec *spec);
 
 pa_memchunk* pa_silence_memchunk_get(pa_silence_cache *cache, pa_mempool *pool, pa_memchunk* ret, const pa_sample_spec *spec, size_t length);
 
-typedef struct pa_mix_info {
-    pa_memchunk chunk;
-    pa_cvolume volume;
-    void *userdata;
-
-    /* The following fields are used internally by pa_mix(), should
-     * not be initialised by the caller of pa_mix(). */
-    void *ptr;
-    union {
-        int32_t i;
-        float f;
-    } linear[PA_CHANNELS_MAX];
-} pa_mix_info;
-
-size_t pa_mix(
-    pa_mix_info channels[],
-    unsigned nchannels,
-    void *data,
-    size_t length,
-    const pa_sample_spec *spec,
-    const pa_cvolume *volume,
-    pa_bool_t mute);
-
-void pa_volume_memchunk(
-    pa_memchunk*c,
-    const pa_sample_spec *spec,
-    const pa_cvolume *volume);
-
 size_t pa_frame_align(size_t l, const pa_sample_spec *ss) PA_GCC_PURE;
 
 pa_bool_t pa_frame_aligned(size_t l, const pa_sample_spec *ss) PA_GCC_PURE;
@@ -79,6 +56,23 @@ void pa_deinterleave(const void *src, void *dst[], unsigned channels, size_t ss,
 
 void pa_sample_clamp(pa_sample_format_t format, void *dst, size_t dstr, const void *src, size_t sstr, unsigned n);
 
+static inline int32_t pa_mult_s16_volume(int16_t v, int32_t cv) {
+#if __WORDSIZE == 64 || ((ULONG_MAX) > (UINT_MAX))
+    /* Multiply with 64 bit integers on 64 bit platforms */
+    return (v * (int64_t) cv) >> 16;
+#else
+    /* Multiplying the 32 bit volume factor with the
+     * 16 bit sample might result in an 48 bit value. We
+     * want to do without 64 bit integers and hence do
+     * the multiplication independently for the HI and
+     * LO part of the volume. */
+
+    int32_t hi = cv >> 16;
+    int32_t lo = cv & 0xFFFF;
+    return ((v * lo) >> 16) + (v * hi);
+#endif
+}
+
 pa_usec_t pa_bytes_to_usec_round_up(uint64_t length, const pa_sample_spec *spec);
 size_t pa_usec_to_bytes_round_up(pa_usec_t t, const pa_sample_spec *spec);
 
@@ -86,7 +80,7 @@ void pa_memchunk_dump_to_file(pa_memchunk *c, const char *fn);
 
 void pa_memchunk_sine(pa_memchunk *c, pa_mempool *pool, unsigned rate, unsigned freq);
 
-typedef void (*pa_do_volume_func_t) (void *samples, void *volumes, unsigned channels, unsigned length);
+typedef void (*pa_do_volume_func_t) (void *samples, const void *volumes, unsigned channels, unsigned length);
 
 pa_do_volume_func_t pa_get_volume_func(pa_sample_format_t f);
 void pa_set_volume_func(pa_sample_format_t f, pa_do_volume_func_t func);

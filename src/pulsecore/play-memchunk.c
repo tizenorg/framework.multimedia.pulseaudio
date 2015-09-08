@@ -25,13 +25,8 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
-
-#include <pulse/xmalloc.h>
-#include <pulse/gccmacro.h>
 
 #include <pulsecore/sink-input.h>
-#include <pulsecore/thread-mq.h>
 #include <pulsecore/play-memblockq.h>
 
 #include "play-memchunk.h"
@@ -43,19 +38,24 @@ int pa_play_memchunk(
         const pa_memchunk *chunk,
         pa_cvolume *volume,
         pa_proplist *p,
+        pa_sink_input_flags_t flags,
         uint32_t *sink_input_index) {
 
     pa_memblockq *q;
     int r;
+    pa_memchunk silence;
 
     pa_assert(sink);
     pa_assert(ss);
     pa_assert(chunk);
 
-    q = pa_memblockq_new(0, chunk->length, 0, pa_frame_size(ss), 1, 1, 0, NULL);
+    pa_silence_memchunk_get(&sink->core->silence_cache, sink->core->mempool, &silence, ss, 0);
+    q = pa_memblockq_new("pa_play_memchunk() q", 0, chunk->length, 0, ss, 1, 1, 0, &silence);
+    pa_memblock_unref(silence.memblock);
+
     pa_assert_se(pa_memblockq_push(q, chunk) >= 0);
 
-    if ((r = pa_play_memblockq(sink, ss, map, q, volume, p, sink_input_index)) < 0) {
+    if ((r = pa_play_memblockq(sink, ss, map, q, volume, p, flags, sink_input_index)) < 0) {
         pa_memblockq_free(q);
         return r;
     }

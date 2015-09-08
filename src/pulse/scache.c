@@ -25,16 +25,15 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
 
 #include <pulse/utf8.h>
+#include <pulse/fork-detect.h>
 
 #include <pulsecore/pstream-util.h>
 #include <pulsecore/macro.h>
 #include <pulsecore/proplist-util.h>
 
 #include "internal.h"
-
 #include "scache.h"
 
 int pa_stream_connect_upload(pa_stream *s, size_t length) {
@@ -45,9 +44,11 @@ int pa_stream_connect_upload(pa_stream *s, size_t length) {
     pa_assert(s);
     pa_assert(PA_REFCNT_VALUE(s) >= 1);
 
+    PA_CHECK_VALIDITY(s->context, !pa_detect_fork(), PA_ERR_FORKED);
     PA_CHECK_VALIDITY(s->context, s->state == PA_STREAM_UNCONNECTED, PA_ERR_BADSTATE);
     PA_CHECK_VALIDITY(s->context, length > 0, PA_ERR_INVALID);
     PA_CHECK_VALIDITY(s->context, length == (size_t) (uint32_t) length, PA_ERR_INVALID);
+    PA_CHECK_VALIDITY(s->context, s->context->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
 
     if (!(name = pa_proplist_gets(s->proplist, PA_PROP_EVENT_ID)))
         name = pa_proplist_gets(s->proplist, PA_PROP_MEDIA_NAME);
@@ -85,6 +86,7 @@ int pa_stream_finish_upload(pa_stream *s) {
     pa_assert(s);
     pa_assert(PA_REFCNT_VALUE(s) >= 1);
 
+    PA_CHECK_VALIDITY(s->context, !pa_detect_fork(), PA_ERR_FORKED);
     PA_CHECK_VALIDITY(s->context, s->channel_valid, PA_ERR_BADSTATE);
     PA_CHECK_VALIDITY(s->context, s->context->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
 
@@ -174,6 +176,7 @@ pa_operation *pa_context_play_sample(pa_context *c, const char *name, const char
     pa_assert(c);
     pa_assert(PA_REFCNT_VALUE(c) >= 1);
 
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
     PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
     PA_CHECK_VALIDITY_RETURN_NULL(c, name && *name, PA_ERR_INVALID);
     PA_CHECK_VALIDITY_RETURN_NULL(c, !dev || *dev, PA_ERR_INVALID);
@@ -187,7 +190,7 @@ pa_operation *pa_context_play_sample(pa_context *c, const char *name, const char
     pa_tagstruct_putu32(t, PA_INVALID_INDEX);
     pa_tagstruct_puts(t, dev);
 
-    if (volume == PA_VOLUME_INVALID && c->version < 15)
+    if (!PA_VOLUME_IS_VALID(volume) && c->version < 15)
         volume = PA_VOLUME_NORM;
 
     pa_tagstruct_putu32(t, volume);
@@ -213,6 +216,7 @@ pa_operation *pa_context_play_sample_with_proplist(pa_context *c, const char *na
     pa_assert(c);
     pa_assert(PA_REFCNT_VALUE(c) >= 1);
 
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
     PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
     PA_CHECK_VALIDITY_RETURN_NULL(c, name && *name, PA_ERR_INVALID);
     PA_CHECK_VALIDITY_RETURN_NULL(c, !dev || *dev, PA_ERR_INVALID);
@@ -227,7 +231,7 @@ pa_operation *pa_context_play_sample_with_proplist(pa_context *c, const char *na
     pa_tagstruct_putu32(t, PA_INVALID_INDEX);
     pa_tagstruct_puts(t, dev);
 
-    if (volume == PA_VOLUME_INVALID && c->version < 15)
+    if (!PA_VOLUME_IS_VALID(volume) && c->version < 15)
         volume = PA_VOLUME_NORM;
 
     pa_tagstruct_putu32(t, volume);
@@ -255,6 +259,7 @@ pa_operation* pa_context_remove_sample(pa_context *c, const char *name, pa_conte
     pa_assert(c);
     pa_assert(PA_REFCNT_VALUE(c) >= 1);
 
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
     PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
     PA_CHECK_VALIDITY_RETURN_NULL(c, name && *name, PA_ERR_INVALID);
 

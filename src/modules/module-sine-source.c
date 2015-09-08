@@ -24,24 +24,16 @@
 #endif
 
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
-#include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
-#include <sys/ioctl.h>
-#include <sys/poll.h>
 
 #include <pulse/rtclock.h>
 #include <pulse/timeval.h>
 #include <pulse/xmalloc.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/source.h>
 #include <pulsecore/module.h>
-#include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
@@ -274,7 +266,7 @@ int pa__init(pa_module*m) {
     pa_source_set_rtpoll(u->source, u->rtpoll);
     pa_source_set_fixed_latency(u->source, u->block_usec);
 
-    if (!(u->thread = pa_thread_new(thread_func, u))) {
+    if (!(u->thread = pa_thread_new("sine-source", thread_func, u))) {
         pa_log("Failed to create thread.");
         goto fail;
     }

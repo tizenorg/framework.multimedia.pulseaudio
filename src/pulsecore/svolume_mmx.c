@@ -24,16 +24,15 @@
 #include <config.h>
 #endif
 
-#include <pulse/timeval.h>
+#include <pulse/rtclock.h>
+
 #include <pulsecore/random.h>
 #include <pulsecore/macro.h>
-#include <pulsecore/g711.h>
-#include <pulsecore/core-util.h>
+#include <pulsecore/endianmacros.h>
 
 #include "cpu-x86.h"
 
 #include "sample-util.h"
-#include "endianmacros.h"
 
 #if defined (__i386__) || defined (__amd64__)
 /* in s: 2 int16_t samples
@@ -41,7 +40,7 @@
  * out s: contains scaled and clamped int16_t samples.
  *
  * We calculate the high 32 bits of a 32x16 multiply which we then
- * clamp to 16 bits. The calulcation is:
+ * clamp to 16 bits. The calculation is:
  *
  *  vl = (v & 0xffff)
  *  vh = (v >> 16)
@@ -93,14 +92,13 @@
       " por %%mm4, "#s1"             \n\t" /* .. |  l  h |  */ \
       " por %%mm5, "#s2"             \n\t"
 
-static void
-pa_volume_s16ne_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsigned length)
-{
+static void pa_volume_s16ne_mmx(int16_t *samples, const int32_t *volumes, unsigned channels, unsigned length) {
     pa_reg_x86 channel, temp;
 
-    /* the max number of samples we process at a time, this is also the max amount
-     * we overread the volume array, which should have enough padding. */
-    channels = PA_MAX (4U, channels);
+    /* Channels must be at least 4, and always a multiple of the original number.
+     * This is also the max amount we overread the volume array, which should
+     * have enough padding. */
+    channels = channels == 3 ? 6 : PA_MAX (4U, channels);
 
     __asm__ __volatile__ (
         " xor %3, %3                    \n\t"
@@ -109,7 +107,7 @@ pa_volume_s16ne_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         " test $1, %2                   \n\t" /* check for odd samples */
         " je 2f                         \n\t"
 
-        " movd (%1, %3, 4), %%mm0       \n\t" /* |  v0h  |  v0l  | */
+        " movd (%q1, %3, 4), %%mm0      \n\t" /* |  v0h  |  v0l  | */
         " movw (%0), %w4                \n\t" /*     ..  |  p0   | */
         " movd %4, %%mm1                \n\t"
         VOLUME_32x16 (%%mm1, %%mm0)
@@ -124,7 +122,7 @@ pa_volume_s16ne_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         " je 4f                         \n\t"
 
         "3:                             \n\t" /* do samples in groups of 2 */
-        " movq (%1, %3, 4), %%mm0       \n\t" /* |  v1h  |  v1l  |  v0h  |  v0l  | */
+        " movq (%q1, %3, 4), %%mm0      \n\t" /* |  v1h  |  v1l  |  v0h  |  v0l  | */
         " movd (%0), %%mm1              \n\t" /*              .. |   p1  |  p0   | */
         VOLUME_32x16 (%%mm1, %%mm0)
         " movd %%mm0, (%0)              \n\t" /*              .. | p1*v1 | p0*v0 | */
@@ -137,8 +135,8 @@ pa_volume_s16ne_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         " je 6f                         \n\t"
 
         "5:                             \n\t" /* do samples in groups of 4 */
-        " movq (%1, %3, 4), %%mm0       \n\t" /* |  v1h  |  v1l  |  v0h  |  v0l  | */
-        " movq 8(%1, %3, 4), %%mm2      \n\t" /* |  v3h  |  v3l  |  v2h  |  v2l  | */
+        " movq (%q1, %3, 4), %%mm0      \n\t" /* |  v1h  |  v1l  |  v0h  |  v0l  | */
+        " movq 8(%q1, %3, 4), %%mm2     \n\t" /* |  v3h  |  v3l  |  v2h  |  v2l  | */
         " movd (%0), %%mm1              \n\t" /*              .. |   p1  |  p0   | */
         " movd 4(%0), %%mm3             \n\t" /*              .. |   p3  |  p2   | */
         VOLUME_32x16 (%%mm1, %%mm0)
@@ -153,20 +151,23 @@ pa_volume_s16ne_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         "6:                             \n\t"
         " emms                          \n\t"
 
-        : "+r" (samples), "+r" (volumes), "+r" (length), "=D" ((pa_reg_x86)channel), "=&r" (temp)
-        : "rm" ((pa_reg_x86)channels)
+        : "+r" (samples), "+r" (volumes), "+r" (length), "=D" (channel), "=&r" (temp)
+#if defined (__i386__)
+        : "m" (channels)
+#else
+        : "r" ((pa_reg_x86)channels)
+#endif
         : "cc"
     );
 }
 
-static void
-pa_volume_s16re_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsigned length)
-{
+static void pa_volume_s16re_mmx(int16_t *samples, const int32_t *volumes, unsigned channels, unsigned length) {
     pa_reg_x86 channel, temp;
 
-    /* the max number of samples we process at a time, this is also the max amount
-     * we overread the volume array, which should have enough padding. */
-    channels = PA_MAX (4U, channels);
+    /* Channels must be at least 4, and always a multiple of the original number.
+     * This is also the max amount we overread the volume array, which should
+     * have enough padding. */
+    channels = channels == 3 ? 6 : PA_MAX (4U, channels);
 
     __asm__ __volatile__ (
         " xor %3, %3                    \n\t"
@@ -179,7 +180,7 @@ pa_volume_s16re_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         " test $1, %2                   \n\t" /* check for odd samples */
         " je 2f                         \n\t"
 
-        " movd (%1, %3, 4), %%mm0       \n\t" /* |  v0h  |  v0l  | */
+        " movd (%q1, %3, 4), %%mm0      \n\t" /* |  v0h  |  v0l  | */
         " movw (%0), %w4                \n\t" /*     ..  |  p0   | */
         " rorw $8, %w4                  \n\t"
         " movd %4, %%mm1                \n\t"
@@ -196,7 +197,7 @@ pa_volume_s16re_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         " je 4f                         \n\t"
 
         "3:                             \n\t" /* do samples in groups of 2 */
-        " movq (%1, %3, 4), %%mm0       \n\t" /* |  v1h  |  v1l  |  v0h  |  v0l  | */
+        " movq (%q1, %3, 4), %%mm0      \n\t" /* |  v1h  |  v1l  |  v0h  |  v0l  | */
         " movd (%0), %%mm1              \n\t" /*              .. |   p1  |  p0   | */
         SWAP_16 (%%mm1)
         VOLUME_32x16 (%%mm1, %%mm0)
@@ -211,8 +212,8 @@ pa_volume_s16re_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         " je 6f                         \n\t"
 
         "5:                             \n\t" /* do samples in groups of 4 */
-        " movq (%1, %3, 4), %%mm0       \n\t" /* |  v1h  |  v1l  |  v0h  |  v0l  | */
-        " movq 8(%1, %3, 4), %%mm2      \n\t" /* |  v3h  |  v3l  |  v2h  |  v2l  | */
+        " movq (%q1, %3, 4), %%mm0      \n\t" /* |  v1h  |  v1l  |  v0h  |  v0l  | */
+        " movq 8(%q1, %3, 4), %%mm2     \n\t" /* |  v3h  |  v3l  |  v2h  |  v2l  | */
         " movd (%0), %%mm1              \n\t" /*              .. |   p1  |  p0   | */
         " movd 4(%0), %%mm3             \n\t" /*              .. |   p3  |  p2   | */
         SWAP_16_2 (%%mm1, %%mm3)
@@ -229,87 +230,25 @@ pa_volume_s16re_mmx (int16_t *samples, int32_t *volumes, unsigned channels, unsi
         "6:                             \n\t"
         " emms                          \n\t"
 
-        : "+r" (samples), "+r" (volumes), "+r" (length), "=D" ((pa_reg_x86)channel), "=&r" (temp)
-        : "rm" ((pa_reg_x86)channels)
+        : "+r" (samples), "+r" (volumes), "+r" (length), "=D" (channel), "=&r" (temp)
+#if defined (__i386__)
+        : "m" (channels)
+#else
+        : "r" ((pa_reg_x86)channels)
+#endif
         : "cc"
     );
 }
 
-#undef RUN_TEST
-
-#ifdef RUN_TEST
-#define CHANNELS 2
-#define SAMPLES 1021
-#define TIMES 1000
-#define PADDING 16
-
-static void run_test (void) {
-    int16_t samples[SAMPLES];
-    int16_t samples_ref[SAMPLES];
-    int16_t samples_orig[SAMPLES];
-    int32_t volumes[CHANNELS + PADDING];
-    int i, j, padding;
-    pa_do_volume_func_t func;
-    pa_usec_t start, stop;
-
-    func = pa_get_volume_func (PA_SAMPLE_S16NE);
-
-    printf ("checking MMX %zd\n", sizeof (samples));
-
-    pa_random (samples, sizeof (samples));
-    /* for (i = 0; i < SAMPLES; i++)
-       samples[i] = -1; */
-    memcpy (samples_ref, samples, sizeof (samples));
-    memcpy (samples_orig, samples, sizeof (samples));
-
-    for (i = 0; i < CHANNELS; i++)
-        volumes[i] = rand() >> 1;
-        /* volumes[i] = 0x0000ffff; */
-    for (padding = 0; padding < PADDING; padding++, i++)
-        volumes[i] = volumes[padding];
-
-    func (samples_ref, volumes, CHANNELS, sizeof (samples));
-    pa_volume_s16ne_mmx (samples, volumes, CHANNELS, sizeof (samples));
-    for (i = 0; i < SAMPLES; i++) {
-        if (samples[i] != samples_ref[i]) {
-            printf ("%d: %04x != %04x (%04x * %08x)\n", i, samples[i], samples_ref[i],
-                  samples_orig[i], volumes[i % CHANNELS]);
-        }
-    }
-
-    start = pa_rtclock_now();
-    for (j = 0; j < TIMES; j++) {
-        memcpy (samples, samples_orig, sizeof (samples));
-        pa_volume_s16ne_mmx (samples, volumes, CHANNELS, sizeof (samples));
-    }
-    stop = pa_rtclock_now();
-    pa_log_info("MMX: %llu usec.", (long long unsigned int)(stop - start));
-
-    start = pa_rtclock_now();
-    for (j = 0; j < TIMES; j++) {
-        memcpy (samples_ref, samples_orig, sizeof (samples));
-        func (samples_ref, volumes, CHANNELS, sizeof (samples));
-    }
-    stop = pa_rtclock_now();
-    pa_log_info("ref: %llu usec.", (long long unsigned int)(stop - start));
-}
-#endif
-
 #endif /* defined (__i386__) || defined (__amd64__) */
 
-
-void pa_volume_func_init_mmx (pa_cpu_x86_flag_t flags) {
+void pa_volume_func_init_mmx(pa_cpu_x86_flag_t flags) {
 #if defined (__i386__) || defined (__amd64__)
+    if ((flags & PA_CPU_X86_MMX) && (flags & PA_CPU_X86_CMOV)) {
+        pa_log_info("Initialising MMX optimized volume functions.");
 
-#ifdef RUN_TEST
-    run_test ();
-#endif
-
-    if (flags & PA_CPU_X86_MMX) {
-        pa_log_info("Initialising MMX optimized functions.");
-
-        pa_set_volume_func (PA_SAMPLE_S16NE, (pa_do_volume_func_t) pa_volume_s16ne_mmx);
-        pa_set_volume_func (PA_SAMPLE_S16RE, (pa_do_volume_func_t) pa_volume_s16re_mmx);
+        pa_set_volume_func(PA_SAMPLE_S16NE, (pa_do_volume_func_t) pa_volume_s16ne_mmx);
+        pa_set_volume_func(PA_SAMPLE_S16RE, (pa_do_volume_func_t) pa_volume_s16re_mmx);
     }
 #endif /* defined (__i386__) || defined (__amd64__) */
 }

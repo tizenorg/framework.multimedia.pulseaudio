@@ -24,10 +24,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <pulsecore/time-smoother.h>
+#include <check.h>
+
 #include <pulse/timeval.h>
 
-int main(int argc, char*argv[]) {
+#include <pulsecore/log.h>
+#include <pulsecore/time-smoother.h>
+
+START_TEST (smoother_test) {
     pa_usec_t x;
     unsigned u = 0;
     pa_smoother *s;
@@ -45,7 +49,8 @@ int main(int argc, char*argv[]) {
 
     srand(0);
 
-    pa_log_set_level(PA_LOG_DEBUG);
+    if (!getenv("MAKE_CHECK"))
+        pa_log_set_level(PA_LOG_DEBUG);
 
     for (m = 0, u = 0; u < PA_ELEMENTSOF(msec); u+= 2) {
 
@@ -67,16 +72,35 @@ int main(int argc, char*argv[]) {
 
         while (u < PA_ELEMENTSOF(msec) && (pa_usec_t) msec[u]*PA_USEC_PER_MSEC < x) {
             pa_smoother_put(s, (pa_usec_t) msec[u] * PA_USEC_PER_MSEC, (pa_usec_t) msec[u+1] * PA_USEC_PER_MSEC);
-            printf("%i\t\t%i\n", msec[u],  msec[u+1]);
+            pa_log_debug("%i\t\t%i", msec[u],  msec[u+1]);
             u += 2;
 
-            pa_smoother_resume(s, (pa_usec_t) msec[u] * PA_USEC_PER_MSEC, TRUE);
+            if (u < PA_ELEMENTSOF(msec))
+                pa_smoother_resume(s, (pa_usec_t) msec[u] * PA_USEC_PER_MSEC, TRUE);
         }
 
-        printf("%llu\t%llu\n", (unsigned long long) (x/PA_USEC_PER_MSEC), (unsigned long long) (pa_smoother_get(s, x)/PA_USEC_PER_MSEC));
+        pa_log_debug("%llu\t%llu", (unsigned long long) (x/PA_USEC_PER_MSEC), (unsigned long long) (pa_smoother_get(s, x)/PA_USEC_PER_MSEC));
     }
 
     pa_smoother_free(s);
+}
+END_TEST
 
-    return 0;
+int main(int argc, char *argv[]) {
+    int failed = 0;
+    Suite *s;
+    TCase *tc;
+    SRunner *sr;
+
+    s = suite_create("Smoother");
+    tc = tcase_create("smoother");
+    tcase_add_test(tc, smoother_test);
+    suite_add_tcase(s, tc);
+
+    sr = srunner_create(s);
+    srunner_run_all(sr, CK_NORMAL);
+    failed = srunner_ntests_failed(sr);
+    srunner_free(sr);
+
+    return (failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

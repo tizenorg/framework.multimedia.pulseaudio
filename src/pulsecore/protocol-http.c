@@ -32,6 +32,7 @@
 #include <pulse/xmalloc.h>
 #include <pulse/timeval.h>
 
+#include <pulsecore/core-util.h>
 #include <pulsecore/ioline.h>
 #include <pulsecore/thread-mq.h>
 #include <pulsecore/macro.h>
@@ -80,6 +81,11 @@ enum state {
     STATE_DATA
 };
 
+enum method {
+    METHOD_GET,
+    METHOD_HEAD
+};
+
 struct connection {
     pa_http_protocol *protocol;
     pa_iochannel *io;
@@ -89,6 +95,7 @@ struct connection {
     pa_client *client;
     enum state state;
     char *url;
+    enum method method;
     pa_module *module;
 };
 
@@ -327,6 +334,11 @@ static void html_response(
 
     http_response(c, code, msg, MIME_HTML);
 
+    if (c->method == METHOD_HEAD) {
+        pa_ioline_defer_close(c->line);
+        return;
+    }
+
     if (!text)
         text = msg;
 
@@ -362,6 +374,11 @@ static void handle_root(struct connection *c) {
     pa_assert(c);
 
     http_response(c, 200, "OK", MIME_HTML);
+
+    if (c->method == METHOD_HEAD) {
+        pa_ioline_defer_close(c->line);
+        return;
+    }
 
     pa_ioline_puts(c->line,
                    HTML_HEADER(PACKAGE_NAME" "PACKAGE_VERSION)
@@ -402,6 +419,11 @@ static void handle_css(struct connection *c) {
 
     http_response(c, 200, "OK", MIME_CSS);
 
+    if (c->method == METHOD_HEAD) {
+        pa_ioline_defer_close(c->line);
+        return;
+    }
+
     pa_ioline_puts(c->line,
                    "body { color: black; background-color: white; }\n"
                    "a:link, a:visited { color: #900000; }\n"
@@ -420,6 +442,12 @@ static void handle_status(struct connection *c) {
     pa_assert(c);
 
     http_response(c, 200, "OK", MIME_TEXT);
+
+    if (c->method == METHOD_HEAD) {
+        pa_ioline_defer_close(c->line);
+        return;
+    }
+
     r = pa_full_status_string(c->protocol->core);
     pa_ioline_puts(c->line, r);
     pa_xfree(r);
@@ -438,6 +466,11 @@ static void handle_listen(struct connection *c) {
                    HTML_HEADER("Listen")
                    "<h2>Sinks</h2>\n"
                    "<p>\n");
+
+    if (c->method == METHOD_HEAD) {
+        pa_ioline_defer_close(c->line);
+        return;
+    }
 
     PA_IDXSET_FOREACH(sink, c->protocol->core->sinks, idx) {
         char *t, *m;
@@ -528,7 +561,7 @@ static void handle_listen_prefix(struct connection *c, const char *source_name) 
     data.driver = __FILE__;
     data.module = c->module;
     data.client = c->client;
-    data.source = source;
+    pa_source_output_new_data_set_source(&data, source, FALSE);
     pa_proplist_update(data.proplist, PA_UPDATE_MERGE, c->client->proplist);
     pa_source_output_new_data_set_sample_spec(&data, &ss);
     pa_source_output_new_data_set_channel_map(&data, &cm);
@@ -551,10 +584,11 @@ static void handle_listen_prefix(struct connection *c, const char *source_name) 
 
     l = (size_t) (pa_bytes_per_second(&ss)*RECORD_BUFFER_SECONDS);
     c->output_memblockq = pa_memblockq_new(
+            "http protocol connection output_memblockq",
             0,
             l,
             0,
-            pa_frame_size(&ss),
+            &ss,
             1,
             0,
             0,
@@ -566,6 +600,10 @@ static void handle_listen_prefix(struct connection *c, const char *source_name) 
     http_response(c, 200, "OK", t);
     pa_xfree(t);
 
+    if(c->method == METHOD_HEAD) {
+        connection_unlink(c);
+        return;
+    }
     pa_ioline_set_callback(c->line, NULL, NULL);
 
     if (pa_ioline_is_drained(c->line))
@@ -606,10 +644,15 @@ static void line_callback(pa_ioline *line, const char *s, void *userdata) {
 
     switch (c->state) {
         case STATE_REQUEST_LINE: {
-            if (!pa_startswith(s, "GET "))
+            if (pa_startswith(s, "GET ")) {
+                c->method = METHOD_GET;
+                s +=4;
+            } else if (pa_startswith(s, "HEAD ")) {
+                c->method = METHOD_HEAD;
+                s +=5;
+            } else {
                 goto fail;
-
-            s +=4;
+            }
 
             c->url = pa_xstrndup(s, strcspn(s, " \r\n\t?"));
             c->state = STATE_MIME_HEADER;
@@ -743,7 +786,7 @@ void pa_http_protocol_unref(pa_http_protocol *p) {
     while ((c = pa_idxset_first(p->connections, NULL)))
         connection_unlink(c);
 
-    pa_idxset_free(p->connections, NULL, NULL);
+    pa_idxset_free(p->connections, NULL);
 
     pa_strlist_free(p->servers);
 

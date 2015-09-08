@@ -24,6 +24,8 @@
 ***/
 
 #include <pulse/def.h>
+#include <pulse/gccmacro.h>
+
 #include <pulsecore/once.h>
 #include <pulsecore/core-util.h>
 
@@ -35,7 +37,7 @@ typedef struct pa_thread pa_thread;
 
 typedef void (*pa_thread_func_t) (void *userdata);
 
-pa_thread* pa_thread_new(pa_thread_func_t thread_func, void *userdata);
+pa_thread* pa_thread_new(const char *name, pa_thread_func_t thread_func, void *userdata);
 void pa_thread_free(pa_thread *t);
 int pa_thread_join(pa_thread *t);
 int pa_thread_is_running(pa_thread *t);
@@ -44,6 +46,9 @@ void pa_thread_yield(void);
 
 void* pa_thread_get_data(pa_thread *t);
 void pa_thread_set_data(pa_thread *t, void *userdata);
+
+const char *pa_thread_get_name(pa_thread *t);
+void pa_thread_set_name(pa_thread *t, const char *name);
 
 typedef struct pa_tls pa_tls;
 
@@ -55,7 +60,7 @@ void *pa_tls_set(pa_tls *t, void *userdata);
 #define PA_STATIC_TLS_DECLARE(name, free_cb)                            \
     static struct {                                                     \
         pa_once once;                                                   \
-        pa_tls *tls;                                                    \
+        pa_tls *volatile tls;                                           \
     } name##_tls = {                                                    \
         .once = PA_ONCE_INIT,                                           \
         .tls = NULL                                                     \
@@ -89,7 +94,7 @@ void *pa_tls_set(pa_tls *t, void *userdata);
     }                                                                   \
     struct __stupid_useless_struct_to_allow_trailing_semicolon
 
-#ifdef SUPPORT_TLS___THREAD
+#if defined(SUPPORT_TLS___THREAD) && !defined(OS_IS_WIN32)
 /* An optimized version of the above that requires no dynamic
  * allocation if the compiler supports __thread */
 #define PA_STATIC_TLS_DECLARE_NO_FREE(name)                             \

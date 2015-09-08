@@ -27,7 +27,6 @@
 
 #include <pulse/xmalloc.h>
 
-#include <pulsecore/queue.h>
 #include <pulsecore/log.h>
 #include <pulsecore/macro.h>
 
@@ -153,7 +152,7 @@ static void dump_event(const char * prefix, pa_subscription_event*e) {
 }
 #endif
 
-/* Deferred callback for dispatching subscirption events */
+/* Deferred callback for dispatching subscription events */
 static void defer_cb(pa_mainloop_api *m, pa_defer_event *de, void *userdata) {
     pa_core *c = userdata;
     pa_subscription *s;
@@ -209,7 +208,7 @@ void pa_subscription_post(pa_core *c, pa_subscription_event_type_t t, uint32_t i
     pa_subscription_event *e;
     pa_assert(c);
 
-    /* No need for queuing subscriptions of noone is listening */
+    /* No need for queuing subscriptions of no one is listening */
     if (!c->subscriptions)
         return;
 
@@ -234,7 +233,7 @@ void pa_subscription_post(pa_core *c, pa_subscription_event_type_t t, uint32_t i
                  * entry in the queue. */
 
                 free_event(i);
-                pa_log_debug("Dropped redundant event due to remove event.");
+                pa_log_debug_verbose("Dropped redundant event due to remove event.");
                 continue;
             }
 
@@ -242,7 +241,7 @@ void pa_subscription_post(pa_core *c, pa_subscription_event_type_t t, uint32_t i
                 /* This object has changed. If a "new" or "change" event for
                  * this object is still in the queue we can exit. */
 
-                pa_log_debug("Dropped redundant event due to change event.");
+                pa_log_debug_verbose("Dropped redundant event due to change event.");
                 return;
             }
         }

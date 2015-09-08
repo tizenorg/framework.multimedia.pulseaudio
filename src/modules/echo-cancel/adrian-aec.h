@@ -17,8 +17,10 @@
 #include <config.h>
 #endif
 
-#include <pulsecore/macro.h>
+#include <pulse/gccmacro.h>
 #include <pulse/xmalloc.h>
+
+#include <pulsecore/macro.h>
 
 #define WIDEB 2
 
@@ -121,7 +123,7 @@ static  REAL IIR_HP_highpass(IIR_HP *i, REAL in) {
     /* Highpass = Signal - Lowpass. Lowpass = Exponential Smoothing */
     i->x += a0 * (in - i->x);
     return in - i->x;
-  };
+  }
 
 typedef struct FIR_HP_300Hz FIR_HP_300Hz;
 
@@ -306,7 +308,8 @@ struct AEC {
   // NLMS-pw
   REAL x[NLMS_LEN + NLMS_EXT];  // tap delayed loudspeaker signal
   REAL xf[NLMS_LEN + NLMS_EXT]; // pre-whitening tap delayed signal
-  PA_DECLARE_ALIGNED(16, REAL, w[NLMS_LEN]);             // tap weights
+  REAL w_arr[NLMS_LEN + (16 / sizeof(REAL))]; // tap weights
+  REAL *w;                      // this will be a 16-byte aligned pointer into w_arr
   int j;                        // optimize: less memory copies
   double dotp_xf_xf;            // double to avoid loss of precision
   float delta;                  // noise floor to stabilize NLMS
@@ -348,7 +351,8 @@ static  void AEC_leaky(AEC *a);
  */
 static  REAL AEC_nlms_pw(AEC *a, REAL d, REAL x_, float stepsize);
 
-  AEC* AEC_init(int RATE, int have_vector);
+AEC* AEC_init(int RATE, int have_vector);
+void AEC_done(AEC *a);
 
 /* Acoustic Echo Cancellation and Suppression of one sample
  * in   d:  microphone signal with echo
@@ -357,24 +361,23 @@ static  REAL AEC_nlms_pw(AEC *a, REAL d, REAL x_, float stepsize);
  */
   int AEC_doAEC(AEC *a, int d_, int x_);
 
-static  float AEC_getambient(AEC *a) {
+PA_GCC_UNUSED static  float AEC_getambient(AEC *a) {
     return a->dfast;
-  };
+  }
 static  void AEC_setambient(AEC *a, float Min_xf) {
     a->dotp_xf_xf -= a->delta;  // subtract old delta
     a->delta = (NLMS_LEN-1) * Min_xf * Min_xf;
     a->dotp_xf_xf += a->delta;  // add new delta
-  };
-static  void AEC_setgain(AEC *a, float gain_) {
+  }
+PA_GCC_UNUSED static  void AEC_setgain(AEC *a, float gain_) {
     a->gain = gain_;
-  };
+  }
 #if 0
   void AEC_openwdisplay(AEC *a);
 #endif
-static  void AEC_setaes(AEC *a, float aes_y2_) {
+PA_GCC_UNUSED static  void AEC_setaes(AEC *a, float aes_y2_) {
     a->aes_y2 = aes_y2_;
-  };
-static  double AEC_max_dotp_xf_xf(AEC *a, double u);
+  }
 
 #define _AEC_H
 #endif

@@ -24,19 +24,15 @@
 #endif
 
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
 
 #include <jack/jack.h>
 
 #include <pulse/xmalloc.h>
 
-#include <pulsecore/core-error.h>
 #include <pulsecore/source.h>
 #include <pulsecore/module.h>
 #include <pulsecore/core-util.h>
@@ -128,11 +124,13 @@ static int source_process_msg(pa_msgobject *o, int code, void *data, int64_t off
             return 0;
 
         case PA_SOURCE_MESSAGE_GET_LATENCY: {
+            jack_latency_range_t r;
             jack_nframes_t l, ft, d;
             size_t n;
 
             /* This is the "worst-case" latency */
-            l = jack_port_get_total_latency(u->client, u->port[0]);
+            jack_port_get_latency_range(u->port[0], JackCaptureLatency, &r);
+            l = r.max;
 
             if (u->saved_frame_time_valid) {
                 /* Adjust the worst case latency by the time that
@@ -253,6 +251,8 @@ int pa__init(pa_module*m) {
     unsigned i;
     const char **ports = NULL, **p;
     pa_source_new_data data;
+    jack_latency_range_t r;
+    size_t n;
 
     pa_assert(m);
 
@@ -289,8 +289,9 @@ int pa__init(pa_module*m) {
     ports = jack_get_ports(u->client, NULL, JACK_DEFAULT_AUDIO_TYPE, JackPortIsPhysical|JackPortIsOutput);
 
     channels = 0;
-    for (p = ports; *p; p++)
-        channels++;
+    if (ports)
+        for (p = ports; *p; p++)
+            channels++;
 
     if (!channels)
         channels = m->core->default_sample_spec.channels;
@@ -363,7 +364,7 @@ int pa__init(pa_module*m) {
     jack_on_shutdown(u->client, jack_shutdown, u);
     jack_set_thread_init_callback(u->client, jack_init, u);
 
-    if (!(u->thread = pa_thread_new(thread_func, u))) {
+    if (!(u->thread = pa_thread_new("jack-source", thread_func, u))) {
         pa_log("Failed to create thread.");
         goto fail;
     }
@@ -376,7 +377,7 @@ int pa__init(pa_module*m) {
     if (do_connect) {
         for (i = 0, p = ports; i < ss.channels; i++, p++) {
 
-            if (!*p) {
+            if (!p || !*p) {
                 pa_log("Not enough physical output ports, leaving unconnected.");
                 break;
             }
@@ -391,9 +392,13 @@ int pa__init(pa_module*m) {
 
     }
 
+    jack_port_get_latency_range(u->port[0], JackCaptureLatency, &r);
+    n = r.max * pa_frame_size(&u->source->sample_spec);
+    pa_source_set_fixed_latency(u->source, pa_bytes_to_usec(n, &u->source->sample_spec));
     pa_source_put(u->source);
 
-    free(ports);
+    if (ports)
+        jack_free(ports);
     pa_modargs_free(ma);
 
     return 0;
@@ -402,7 +407,8 @@ fail:
     if (ma)
         pa_modargs_free(ma);
 
-    free(ports);
+    if (ports)
+        jack_free(ports);
 
     pa__done(m);
 
@@ -425,11 +431,11 @@ void pa__done(pa_module*m) {
     if (!(u = m->userdata))
         return;
 
-    if (u->client)
-        jack_client_close(u->client);
-
     if (u->source)
         pa_source_unlink(u->source);
+
+    if (u->client)
+        jack_client_close(u->client);
 
     if (u->thread) {
         pa_asyncmsgq_send(u->thread_mq.inq, NULL, PA_MESSAGE_SHUTDOWN, NULL, 0, NULL);

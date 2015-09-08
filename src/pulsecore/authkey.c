@@ -29,10 +29,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
-#include <inttypes.h>
 #include <stdlib.h>
-#include <time.h>
-#include <limits.h>
 #include <sys/stat.h>
 
 #include <pulse/util.h>
@@ -56,7 +53,10 @@ static int generate(int fd, void *ret_data, size_t length) {
     pa_random(ret_data, length);
 
     lseek(fd, (off_t) 0, SEEK_SET);
-    (void) ftruncate(fd, (off_t) 0);
+    if (ftruncate(fd, (off_t) 0) < 0) {
+        pa_log("Failed to truncate cookie file: %s", pa_cstrerror(errno));
+        return -1;
+    }
 
     if ((r = pa_loop_write(fd, ret_data, length, NULL)) < 0 || (size_t) r != length) {
         pa_log("Failed to write cookie file: %s", pa_cstrerror(errno));
@@ -70,13 +70,9 @@ static int generate(int fd, void *ret_data, size_t length) {
 #define O_BINARY 0
 #endif
 
-#ifndef O_NOCTTY
-#define O_NOCTTY 0
-#endif
-
-/* Load an euthorization cookie from file fn and store it in data. If
+/* Load an authorization cookie from file fn and store it in data. If
  * the cookie file doesn't exist, create it */
-static int load(const char *fn, void *data, size_t length) {
+static int load(const char *fn, pa_bool_t create, void *data, size_t length) {
     int fd = -1;
     int writable = 1;
     int unlock = 0, ret = -1;
@@ -86,9 +82,12 @@ static int load(const char *fn, void *data, size_t length) {
     pa_assert(data);
     pa_assert(length > 0);
 
-    if ((fd = open(fn, O_RDWR|O_CREAT|O_BINARY|O_NOCTTY, S_IRUSR|S_IWUSR)) < 0) {
+    if (create)
+        pa_make_secure_parent_dir(fn, pa_in_system_mode() ? 0755U : 0700U, -1, -1, FALSE);
 
-        if (errno != EACCES || (fd = open(fn, O_RDONLY|O_BINARY|O_NOCTTY)) < 0) {
+    if ((fd = pa_open_cloexec(fn, (create ? O_RDWR|O_CREAT : O_RDONLY)|O_BINARY, S_IRUSR|S_IWUSR)) < 0) {
+
+        if (!create || errno != EACCES || (fd = open(fn, O_RDONLY|O_BINARY)) < 0) {
             pa_log_warn("Failed to open cookie file '%s': %s", fn, pa_cstrerror(errno));
             goto finish;
         } else
@@ -133,14 +132,14 @@ finish:
 }
 
 /* Load a cookie from a cookie file. If the file doesn't exist, create it. */
-int pa_authkey_load(const char *path, void *data, size_t length) {
+int pa_authkey_load(const char *path, pa_bool_t create, void *data, size_t length) {
     int ret;
 
     pa_assert(path);
     pa_assert(data);
     pa_assert(length > 0);
 
-    if ((ret = load(path, data, length)) < 0)
+    if ((ret = load(path, create, data, length)) < 0)
         pa_log_warn("Failed to load authorization key '%s': %s", path, (ret < 0) ? pa_cstrerror(errno) : "File corrupt");
 
     return ret;
@@ -155,7 +154,7 @@ static char *normalize_path(const char *fn) {
 #ifndef OS_IS_WIN32
     if (fn[0] != '/') {
 #else
-    if (strlen(fn) < 3 || !isalpha(fn[0]) || fn[1] != ':' || fn[2] != '\\') {
+    if (strlen(fn) < 3 || !IsCharAlpha(fn[0]) || fn[1] != ':' || fn[2] != '\\') {
 #endif
         char *homedir, *s;
 
@@ -173,7 +172,7 @@ static char *normalize_path(const char *fn) {
 
 /* Load a cookie from a file in the home directory. If the specified
  * path starts with /, use it as absolute path instead. */
-int pa_authkey_load_auto(const char *fn, void *data, size_t length) {
+int pa_authkey_load_auto(const char *fn, pa_bool_t create, void *data, size_t length) {
     char *p;
     int ret;
 
@@ -184,7 +183,7 @@ int pa_authkey_load_auto(const char *fn, void *data, size_t length) {
     if (!(p = normalize_path(fn)))
         return -2;
 
-    ret = pa_authkey_load(p, data, length);
+    ret = pa_authkey_load(p, create, data, length);
     pa_xfree(p);
 
     return ret;
@@ -204,7 +203,7 @@ int pa_authkey_save(const char *fn, const void *data, size_t length) {
     if (!(p = normalize_path(fn)))
         return -2;
 
-    if ((fd = open(p, O_RDWR|O_CREAT|O_NOCTTY, S_IRUSR|S_IWUSR)) < 0) {
+    if ((fd = pa_open_cloexec(p, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR)) < 0) {
         pa_log_warn("Failed to open cookie file '%s': %s", fn, pa_cstrerror(errno));
         goto finish;
     }

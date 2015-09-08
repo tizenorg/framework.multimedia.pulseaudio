@@ -25,7 +25,8 @@
 #include <inttypes.h>
 #include <pulse/sample.h>
 #include <pulse/channelmap.h>
-#include <pulsecore/core.h>
+#include <pulse/proplist.h>
+#include <pulse/volume.h>
 #include <pulsecore/macro.h>
 
 typedef struct pa_modargs pa_modargs;
@@ -45,6 +46,12 @@ int pa_modargs_get_value_u32(pa_modargs *ma, const char *key, uint32_t *value);
 int pa_modargs_get_value_s32(pa_modargs *ma, const char *key, int32_t *value);
 int pa_modargs_get_value_boolean(pa_modargs *ma, const char *key, pa_bool_t *value);
 
+/* Return a module argument as double value in *value */
+int pa_modargs_get_value_double(pa_modargs *ma, const char *key, double *value);
+
+/* Return a module argument as pa_volume_t value in *value */
+int pa_modargs_get_value_volume(pa_modargs *ma, const char *key, pa_volume_t *value);
+
 /* Return sample spec data from the three arguments "rate", "format" and "channels" */
 int pa_modargs_get_sample_spec(pa_modargs *ma, pa_sample_spec *ss);
 
@@ -58,6 +65,18 @@ structure if no channel_map is found, using pa_channel_map_init_auto() */
 
 int pa_modargs_get_sample_spec_and_channel_map(pa_modargs *ma, pa_sample_spec *ss, pa_channel_map *map, pa_channel_map_def_t def);
 
+/* Return alternate sample rate from "alternate_sample_rate" parameter */
+int pa_modargs_get_alternate_sample_rate(pa_modargs *ma, uint32_t *alternate_rate);
+
 int pa_modargs_get_proplist(pa_modargs *ma, const char *name, pa_proplist *p, pa_update_mode_t m);
+
+/* Iterate through the module argument list. The user should allocate a
+ * state variable of type void* and initialize it with NULL. A pointer
+ * to this variable should then be passed to pa_modargs_iterate()
+ * which should be called in a loop until it returns NULL which
+ * signifies EOL. On each invocation this function will return the
+ * key string for the next entry. The keys in the argument list do not
+ * have any particular order. */
+const char *pa_modargs_iterate(pa_modargs *ma, void **state);
 
 #endif

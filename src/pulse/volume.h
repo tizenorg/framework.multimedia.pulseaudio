@@ -37,7 +37,7 @@
  * \section overv_sec Overview
  *
  * Sinks, sources, sink inputs and samples can all have their own volumes.
- * To deal with these, The PulseAudio libray contains a number of functions
+ * To deal with these, The PulseAudio library contains a number of functions
  * that ease handling.
  *
  * The basic volume type in PulseAudio is the \ref pa_volume_t type. Most of
@@ -71,7 +71,7 @@
  * \section conv_sec Convenience Functions
  *
  * To handle the pa_cvolume structure, the PulseAudio library provides a
- * number of convenienc functions:
+ * number of convenience functions:
  *
  * \li pa_cvolume_valid() - Tests if a pa_cvolume structure is valid.
  * \li pa_cvolume_equal() - Tests if two pa_cvolume structures are identical.
@@ -81,18 +81,21 @@
  *                             structure are muted.
  * \li pa_cvolume_is_norm() - Tests if all channels of a pa_cvolume structure
  *                            are at a normal volume.
- * \li pa_cvolume_set() - Set all channels of a pa_cvolume structure to a
- *                        certain volume.
- * \li pa_cvolume_reset() - Set all channels of a pa_cvolume structure to a
- *                          normal volume.
- * \li pa_cvolume_mute() - Set all channels of a pa_cvolume structure to a
- *                         muted volume.
+ * \li pa_cvolume_set() - Set the first n channels of a pa_cvolume structure to
+ *                        a certain volume.
+ * \li pa_cvolume_reset() - Set the first n channels of a pa_cvolume structure
+ *                          to a normal volume.
+ * \li pa_cvolume_mute() - Set the first n channels of a pa_cvolume structure
+ *                         to a muted volume.
  * \li pa_cvolume_avg() - Return the average volume of all channels.
  * \li pa_cvolume_snprint() - Pretty print a pa_cvolume structure.
  */
 
 /** \file
- * Constants and routines for volume handling */
+ * Constants and routines for volume handling
+ *
+ * See also \subpage volume
+ */
 
 PA_C_DECL_BEGIN
 
@@ -110,15 +113,44 @@ typedef uint32_t pa_volume_t;
 #define PA_VOLUME_MUTED ((pa_volume_t) 0U)
 
 /** Maximum valid volume we can store. \since 0.9.15 */
-#define PA_VOLUME_MAX ((pa_volume_t) UINT32_MAX-1)
+#define PA_VOLUME_MAX ((pa_volume_t) UINT32_MAX/2)
+
+/** Recommended maximum volume to show in user facing UIs.
+ * Note: UIs should deal gracefully with volumes greater than this value
+ * and not cause feedback loops etc. - i.e. if the volume is more than
+ * this, the UI should not limit it and push the limited value back to
+ * the server. \since 0.9.23 */
+#define PA_VOLUME_UI_MAX (pa_sw_volume_from_dB(+11.0))
 
 /** Special 'invalid' volume. \since 0.9.16 */
 #define PA_VOLUME_INVALID ((pa_volume_t) UINT32_MAX)
 
+#ifdef PA_EXT_USE_VOLUME_FADING
+#define PA_VOLUME_FADING_TOKEN_STR "fadi"
+#define PA_VOLUME_FADING_TOKEN_LEN 4
+#define PA_VOLUME_FADING_OPERATION_FRAMES 5
+typedef struct pa_cvolume_fading_info {
+    unsigned multiply;
+    size_t remain_frames;
+    pa_volume_t cur_values[PA_CHANNELS_MAX];
+    pa_volume_t dst_values[PA_CHANNELS_MAX];
+} pa_cvolume_fading_info;
+#endif
+
+/** Check if volume is valid. \since 1.0 */
+#define PA_VOLUME_IS_VALID(v) ((v) <= PA_VOLUME_MAX)
+
+/** Clamp volume to the permitted range. \since 1.0 */
+#define PA_CLAMP_VOLUME(v) (PA_CLAMP_UNLIKELY((v), PA_VOLUME_MUTED, PA_VOLUME_MAX))
+
 /** A structure encapsulating a per-channel volume */
 typedef struct pa_cvolume {
     uint8_t channels;                     /**< Number of channels */
-    pa_volume_t values[PA_CHANNELS_MAX];  /**< Per-channel volume  */
+    pa_volume_t values[PA_CHANNELS_MAX];  /**< Per-channel volume */
+#ifdef PA_EXT_USE_VOLUME_FADING
+    char fading_token[PA_VOLUME_FADING_TOKEN_LEN];
+    pa_cvolume_fading_info *fading_info;
+#endif
 } pa_cvolume;
 
 /** Return non-zero when *a == *b */
@@ -129,13 +161,13 @@ int pa_cvolume_equal(const pa_cvolume *a, const pa_cvolume *b) PA_GCC_PURE;
  * pa_cvolume_valid() will fail for it. \since 0.9.13 */
 pa_cvolume* pa_cvolume_init(pa_cvolume *a);
 
-/** Set the volume of all channels to PA_VOLUME_NORM */
+/** Set the volume of the first n channels to PA_VOLUME_NORM */
 #define pa_cvolume_reset(a, n) pa_cvolume_set((a), (n), PA_VOLUME_NORM)
 
-/** Set the volume of all channels to PA_VOLUME_MUTED */
+/** Set the volume of the first n channels to PA_VOLUME_MUTED */
 #define pa_cvolume_mute(a, n) pa_cvolume_set((a), (n), PA_VOLUME_MUTED)
 
-/** Set the volume of all channels to the specified parameter */
+/** Set the volume of the specified number of channels to the volume v */
 pa_cvolume* pa_cvolume_set(pa_cvolume *a, unsigned channels, pa_volume_t v);
 
 /** Maximum length of the strings returned by
@@ -149,7 +181,7 @@ pa_cvolume* pa_cvolume_set(pa_cvolume *a, unsigned channels, pa_volume_t v);
 char *pa_cvolume_snprint(char *s, size_t l, const pa_cvolume *c);
 
 /** Maximum length of the strings returned by
- * pa_cvolume_snprint_dB(). Please note that this value can change with
+ * pa_sw_cvolume_snprint_dB(). Please note that this value can change with
  * any release without warning and without being considered API or ABI
  * breakage. You should not use this definition anywhere where it
  * might become part of an ABI. \since 0.9.13 */
@@ -169,7 +201,7 @@ char *pa_sw_cvolume_snprint_dB(char *s, size_t l, const pa_cvolume *c);
 char *pa_volume_snprint(char *s, size_t l, pa_volume_t v);
 
 /** Maximum length of the strings returned by
- * pa_volume_snprint_dB(). Please note that this value can change with
+ * pa_sw_volume_snprint_dB(). Please note that this value can change with
  * any release without warning and without being considered API or ABI
  * breakage. You should not use this definition anywhere where it
  * might become part of an ABI. \since 0.9.15 */
@@ -259,7 +291,8 @@ pa_volume_t pa_sw_volume_from_dB(double f) PA_GCC_CONST;
 /** Convert a volume to a decibel value (amplitude, not power). This is only valid for software volumes! */
 double pa_sw_volume_to_dB(pa_volume_t v) PA_GCC_CONST;
 
-/** Convert a linear factor to a volume. This is only valid for software volumes! */
+/** Convert a linear factor to a volume.  0.0 and less is muted while
+ * 1.0 is PA_VOLUME_NORM.  This is only valid for software volumes! */
 pa_volume_t pa_sw_volume_from_linear(double v) PA_GCC_CONST;
 
 /** Convert a volume to a linear factor. This is only valid for software volumes! */
@@ -268,7 +301,7 @@ double pa_sw_volume_to_linear(pa_volume_t v) PA_GCC_CONST;
 #ifdef INFINITY
 #define PA_DECIBEL_MININFTY ((double) -INFINITY)
 #else
-/** This floor value is used as minus infinity when using pa_volume_{to,from}_dB(). */
+/** This floor value is used as minus infinity when using pa_sw_volume_to_dB() / pa_sw_volume_from_dB(). */
 #define PA_DECIBEL_MININFTY ((double) -200.0)
 #endif
 
@@ -301,14 +334,14 @@ float pa_cvolume_get_balance(const pa_cvolume *v, const pa_channel_map *map) PA_
  * pa_channel_map_can_balance(). \since 0.9.15 */
 pa_cvolume* pa_cvolume_set_balance(pa_cvolume *v, const pa_channel_map *map, float new_balance);
 
-/** Calculate a 'fade' value (i.e. 'balance' between front and rear)
+/** Calculate a 'fade' value (i.e.\ 'balance' between front and rear)
  * for the specified volume with the specified channel map. The return
  * value will range from -1.0f (rear) to +1.0f (left). If no fade
  * value is applicable to this channel map the return value will
  * always be 0.0f. See pa_channel_map_can_fade(). \since 0.9.15 */
 float pa_cvolume_get_fade(const pa_cvolume *v, const pa_channel_map *map) PA_GCC_PURE;
 
-/** Adjust the 'fade' value (i.e. 'balance' between front and rear)
+/** Adjust the 'fade' value (i.e.\ 'balance' between front and rear)
  * for the specified volume with the specified channel map. v will be
  * modified in place and returned. The balance is a value between
  * -1.0f and +1.0f. This operation might not be reversible! Also,
@@ -348,13 +381,25 @@ pa_volume_t pa_cvolume_get_position(pa_cvolume *cv, const pa_channel_map *map, p
  * and dest may point to the same structure. \since 0.9.16 */
 pa_cvolume* pa_cvolume_merge(pa_cvolume *dest, const pa_cvolume *a, const pa_cvolume *b);
 
+/** Increase the volume passed in by 'inc', but not exceeding 'limit'.
+ * The proportions between the channels are kept. \since 0.9.19 */
+pa_cvolume* pa_cvolume_inc_clamp(pa_cvolume *v, pa_volume_t inc, pa_volume_t limit);
+
 /** Increase the volume passed in by 'inc'. The proportions between
  * the channels are kept. \since 0.9.16 */
 pa_cvolume* pa_cvolume_inc(pa_cvolume *v, pa_volume_t inc);
 
-/** Increase the volume passed in by 'inc'. The proportions between
+/** Decrease the volume passed in by 'dec'. The proportions between
  * the channels are kept. \since 0.9.16 */
 pa_cvolume* pa_cvolume_dec(pa_cvolume *v, pa_volume_t dec);
+
+#ifdef PA_EXT_USE_VOLUME_FADING
+void pa_cvolume_fading_set(pa_cvolume *v, pa_cvolume_fading_info *f);
+void pa_cvolume_fading_unset(pa_cvolume *v);
+int pa_cvolume_fading_valid(const pa_cvolume *v);
+void pa_cvolume_fading_update(pa_cvolume *dest, pa_cvolume *a);
+int pa_cvolume_fading_multiply(pa_cvolume *v, pa_cvolume *f);
+#endif
 
 PA_C_DECL_END
 

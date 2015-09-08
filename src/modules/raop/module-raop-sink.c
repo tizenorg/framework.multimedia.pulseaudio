@@ -25,14 +25,10 @@
 #endif
 
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <limits.h>
-#include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -47,19 +43,16 @@
 #include <pulse/xmalloc.h>
 
 #include <pulsecore/core-error.h>
-#include <pulsecore/iochannel.h>
 #include <pulsecore/sink.h>
 #include <pulsecore/module.h>
-#include <pulsecore/core-rtclock.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/log.h>
 #include <pulsecore/socket-client.h>
-#include <pulsecore/authkey.h>
 #include <pulsecore/thread-mq.h>
 #include <pulsecore/thread.h>
 #include <pulsecore/time-smoother.h>
-#include <pulsecore/socket-util.h>
+#include <pulsecore/poll.h>
 
 #include "module-raop-sink-symdef.h"
 #include "rtp.h"
@@ -125,7 +118,6 @@ static const char* const valid_modargs[] = {
     "format",
     "rate",
     "channels",
-    "description", /* supported for compatibility reasons, made redundant by sink_properties= */
     NULL
 };
 
@@ -243,10 +235,12 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
         }
 
         case SINK_MESSAGE_RIP_SOCKET: {
-            pa_assert(u->fd >= 0);
-
-            pa_close(u->fd);
-            u->fd = -1;
+            if (u->fd >= 0) {
+                pa_close(u->fd);
+                u->fd = -1;
+            } else
+                /* FIXME */
+                pa_log("We should not get to this state. Cannot rip socket if not connected.");
 
             if (u->sink->thread_info.state == PA_SINK_SUSPENDED) {
 
@@ -256,7 +250,7 @@ static int sink_process_msg(pa_msgobject *o, int code, void *data, int64_t offse
                     pa_rtpoll_item_free(u->rtpoll_item);
                 u->rtpoll_item = NULL;
             } else {
-                /* Quesiton: is this valid here: or should we do some sort of:
+                /* Question: is this valid here: or should we do some sort of:
                    return pa_sink_process_msg(PA_MSGOBJECT(u->core), PA_CORE_MESSAGE_UNLOAD_MODULE, u->module, 0, NULL);
                    ?? */
                 pa_module_unload_request(u->module, TRUE);
@@ -295,7 +289,7 @@ static void sink_set_volume_cb(pa_sink *s) {
     pa_log_debug("Got hardware volume: %s", pa_cvolume_snprint(t, sizeof(t), &hw));
     pa_log_debug("Calculated software volume: %s", pa_cvolume_snprint(t, sizeof(t), &s->soft_volume));
 
-    /* Any necessary software volume manipulateion is done so set
+    /* Any necessary software volume manipulation is done so set
        our hw volume (or v as a single value) on the device */
     pa_raop_client_set_volume(u->raop, v);
 }
@@ -333,9 +327,8 @@ static void thread_func(void *userdata) {
     for (;;) {
         int ret;
 
-        if (PA_SINK_IS_OPENED(u->sink->thread_info.state))
-            if (u->sink->thread_info.rewind_requested)
-                pa_sink_process_rewind(u->sink, 0);
+        if (PA_UNLIKELY(u->sink->thread_info.rewind_requested))
+            pa_sink_process_rewind(u->sink, 0);
 
         if (u->rtpoll_item) {
             struct pollfd *pollfd;
@@ -514,7 +507,7 @@ int pa__init(pa_module*m) {
     struct userdata *u = NULL;
     pa_sample_spec ss;
     pa_modargs *ma = NULL;
-    const char *server, *desc;
+    const char *server;
     pa_sink_new_data data;
 
     pa_assert(m);
@@ -584,10 +577,7 @@ int pa__init(pa_module*m) {
     pa_sink_new_data_set_sample_spec(&data, &ss);
     pa_proplist_sets(data.proplist, PA_PROP_DEVICE_STRING, server);
     pa_proplist_sets(data.proplist, PA_PROP_DEVICE_INTENDED_ROLES, "music");
-    if ((desc = pa_modargs_get_value(ma, "description", NULL)))
-        pa_proplist_sets(data.proplist, PA_PROP_DEVICE_DESCRIPTION, desc);
-    else
-        pa_proplist_setf(data.proplist, PA_PROP_DEVICE_DESCRIPTION, "RAOP sink '%s'", server);
+    pa_proplist_setf(data.proplist, PA_PROP_DEVICE_DESCRIPTION, "RAOP sink '%s'", server);
 
     if (pa_modargs_get_proplist(ma, "sink_properties", data.proplist, PA_UPDATE_REPLACE) < 0) {
         pa_log("Invalid properties");
@@ -605,9 +595,9 @@ int pa__init(pa_module*m) {
 
     u->sink->parent.process_msg = sink_process_msg;
     u->sink->userdata = u;
-    u->sink->set_volume = sink_set_volume_cb;
-    u->sink->set_mute = sink_set_mute_cb;
-    u->sink->flags = PA_SINK_LATENCY|PA_SINK_NETWORK|PA_SINK_HW_VOLUME_CTRL;
+    pa_sink_set_set_volume_callback(u->sink, sink_set_volume_cb);
+    pa_sink_set_set_mute_callback(u->sink, sink_set_mute_cb);
+    u->sink->flags = PA_SINK_LATENCY|PA_SINK_NETWORK;
 
     pa_sink_set_asyncmsgq(u->sink, u->thread_mq.inq);
     pa_sink_set_rtpoll(u->sink, u->rtpoll);
@@ -620,7 +610,7 @@ int pa__init(pa_module*m) {
     pa_raop_client_set_callback(u->raop, on_connection, u);
     pa_raop_client_set_closed_callback(u->raop, on_close, u);
 
-    if (!(u->thread = pa_thread_new(thread_func, u))) {
+    if (!(u->thread = pa_thread_new("raop-sink", thread_func, u))) {
         pa_log("Failed to create thread.");
         goto fail;
     }

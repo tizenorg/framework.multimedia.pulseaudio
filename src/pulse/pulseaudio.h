@@ -25,6 +25,7 @@
 
 #include <pulse/mainloop-api.h>
 #include <pulse/sample.h>
+#include <pulse/format.h>
 #include <pulse/def.h>
 #include <pulse/context.h>
 #include <pulse/stream.h>
@@ -84,7 +85,7 @@
  * based style or if you want to use the advanced features of the
  * PulseAudio API. A guide can be found in \subpage async.
  *
- * By using the built-in threaded main loop, it is possible to acheive a
+ * By using the built-in threaded main loop, it is possible to achieve a
  * pseudo-synchronous API, which can be useful in synchronous applications
  * where the simple API is insufficient. See the \ref async page for
  * details.
@@ -103,6 +104,27 @@
  * The included main loop implementation is also not thread safe. Take care
  * to make sure event objects are not manipulated when any other code is
  * using the main loop.
+ *
+ * \section error_sec Error Handling
+ *
+ * Every function should explicitly document how errors are reported to
+ * the caller. Unfortunately, currently a lot of that documentation is
+ * missing. Here is an overview of the general conventions used.
+ *
+ * The PulseAudio API indicates error conditions by returning a negative
+ * integer value or a NULL pointer. On success, zero or a positive integer
+ * value or a valid pointer is returned.
+ *
+ * Functions of the \ref simple generally return -1 or NULL on failure and
+ * can optionally store an error code (see ::pa_error_code) using a pointer
+ * argument.
+ *
+ * Functions of the \ref async return an negative error code or NULL on
+ * failure (see ::pa_error_code). In the later case, pa_context_errno()
+ * can be used to obtain the error code of the last failed operation.
+ *
+ * An error code can be turned into a human readable message using
+ * pa_strerror().
  *
  * \section pkgconfig pkg-config
  *

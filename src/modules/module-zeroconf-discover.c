@@ -36,14 +36,9 @@
 #include <avahi-common/malloc.h>
 
 #include <pulse/xmalloc.h>
-#include <pulse/util.h>
 
-#include <pulsecore/sink.h>
-#include <pulsecore/source.h>
-#include <pulsecore/native-common.h>
 #include <pulsecore/core-util.h>
 #include <pulsecore/log.h>
-#include <pulsecore/core-subscribe.h>
 #include <pulsecore/hashmap.h>
 #include <pulsecore/modargs.h>
 #include <pulsecore/namereg.h>
@@ -168,17 +163,17 @@ static void resolver_cb(
             char *key, *value;
             pa_assert_se(avahi_string_list_get_pair(l, &key, &value, NULL) == 0);
 
-            if (strcmp(key, "device") == 0) {
+            if (pa_streq(key, "device")) {
                 pa_xfree(device);
                 device = value;
                 value = NULL;
-            } else if (strcmp(key, "rate") == 0)
+            } else if (pa_streq(key, "rate"))
                 ss.rate = (uint32_t) atoi(value);
-            else if (strcmp(key, "channels") == 0)
+            else if (pa_streq(key, "channels"))
                 ss.channels = (uint8_t) atoi(value);
-            else if (strcmp(key, "format") == 0)
+            else if (pa_streq(key, "format"))
                 ss.format = pa_parse_sample_format(value);
-            else if (strcmp(key, "channel_map") == 0) {
+            else if (pa_streq(key, "channel_map")) {
                 pa_channel_map_parse(&cm, value);
                 channel_map_set = TRUE;
             }
@@ -431,7 +426,7 @@ void pa__done(pa_module*m) {
             tunnel_free(t);
         }
 
-        pa_hashmap_free(u->tunnels, NULL, NULL);
+        pa_hashmap_free(u->tunnels, NULL);
     }
 
     pa_xfree(u);

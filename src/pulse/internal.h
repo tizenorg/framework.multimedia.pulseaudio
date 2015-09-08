@@ -29,12 +29,12 @@
 #include <pulse/operation.h>
 #include <pulse/subscribe.h>
 #include <pulse/ext-device-manager.h>
+#include <pulse/ext-device-restore.h>
 #include <pulse/ext-stream-restore.h>
 
 #include <pulsecore/socket-client.h>
 #include <pulsecore/pstream.h>
 #include <pulsecore/pdispatch.h>
-#include <pulsecore/dynarray.h>
 #include <pulsecore/llist.h>
 #include <pulsecore/native-common.h>
 #include <pulsecore/strlist.h>
@@ -66,7 +66,7 @@ struct pa_context {
     pa_pstream *pstream;
     pa_pdispatch *pdispatch;
 
-    pa_dynarray *record_streams, *playback_streams;
+    pa_hashmap *record_streams, *playback_streams;
     PA_LLIST_HEAD(pa_stream, streams);
     PA_LLIST_HEAD(pa_operation, operations);
 
@@ -91,6 +91,7 @@ struct pa_context {
     pa_bool_t no_fail:1;
     pa_bool_t do_autospawn:1;
     pa_bool_t use_rtclock:1;
+    pa_bool_t filter_added:1;
     pa_spawn_api spawn_api;
 
     pa_strlist *server_list;
@@ -107,6 +108,10 @@ struct pa_context {
         void *userdata;
     } ext_device_manager;
     struct {
+        pa_ext_device_restore_subscribe_cb_t callback;
+        void *userdata;
+    } ext_device_restore;
+    struct {
         pa_ext_stream_restore_subscribe_cb_t callback;
         void *userdata;
     } ext_stream_restore;
@@ -121,6 +126,8 @@ typedef struct pa_index_correction {
     pa_bool_t absolute:1;
     pa_bool_t corrupt:1;
 } pa_index_correction;
+
+#define PA_MAX_FORMATS (PA_ENCODING_MAX)
 
 struct pa_stream {
     PA_REFCNT_DECLARE;
@@ -137,6 +144,9 @@ struct pa_stream {
 
     pa_sample_spec sample_spec;
     pa_channel_map channel_map;
+    uint8_t n_formats;
+    pa_format_info *req_formats[PA_MAX_FORMATS];
+    pa_format_info *format;
 
     pa_proplist *proplist;
 
@@ -159,6 +169,7 @@ struct pa_stream {
     /* playback */
     pa_memblock *write_memblock;
     void *write_data;
+    int64_t latest_underrun_at_index;
 
     /* recording */
     pa_memchunk peek_memchunk;
@@ -223,6 +234,8 @@ struct pa_operation {
     pa_operation_state_t state;
     void *userdata;
     pa_operation_cb_t callback;
+    void *state_userdata;
+    pa_operation_notify_cb_t state_callback;
 
     void *private; /* some operations might need this */
 };
@@ -289,6 +302,7 @@ pa_tagstruct *pa_tagstruct_command(pa_context *c, uint32_t command, uint32_t *ta
     PA_FAIL_RETURN_ANY(context, error, NULL)
 
 void pa_ext_device_manager_command(pa_context *c, uint32_t tag, pa_tagstruct *t);
+void pa_ext_device_restore_command(pa_context *c, uint32_t tag, pa_tagstruct *t);
 void pa_ext_stream_restore_command(pa_context *c, uint32_t tag, pa_tagstruct *t);
 
 pa_bool_t pa_mainloop_is_our_api(pa_mainloop_api*m);
