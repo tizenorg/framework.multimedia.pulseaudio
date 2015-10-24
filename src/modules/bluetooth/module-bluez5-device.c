@@ -1551,7 +1551,23 @@ static void thread_func(void *userdata) {
         bool disable_timer = true;
 
         pollfd = u->rtpoll_item ? pa_rtpoll_item_get_pollfd(u->rtpoll_item, NULL) : NULL;
-
+#ifdef __TIZEN_BT__
+        if (pollfd && (pollfd->revents & ~(POLLOUT|POLLIN))) {
+            pa_log_info("FD error: %s%s%s%s",
+                        pollfd->revents & POLLERR ? "POLLERR " :"",
+                        pollfd->revents & POLLHUP ? "POLLHUP " :"",
+                        pollfd->revents & POLLPRI ? "POLLPRI " :"",
+                        pollfd->revents & POLLNVAL ? "POLLNVAL " :"");
+            if (pollfd->revents & POLLHUP) {
+			pollfd = NULL;
+			do_write = 0;
+			pending_read_bytes = 0;
+			writable = false;
+			transport_release(u);
+            } else
+                goto fail;
+        }
+#endif
         if (u->source && PA_SOURCE_IS_LINKED(u->source->thread_info.state)) {
 
             /* We should send two blocks to the device before we expect
@@ -1569,7 +1585,11 @@ static void thread_func(void *userdata) {
                     n_read = a2dp_process_push(u);
 
                 if (n_read < 0)
-                    goto io_fail;
+#ifdef __TIZEN_BT__
+			goto fail;
+#else
+			goto io_fail;
+#endif
 
                 /* We just read something, so we are supposed to write something, too */
                 pending_read_bytes += n_read;
@@ -1637,13 +1657,13 @@ static void thread_func(void *userdata) {
 #ifdef __TIZEN_BT__
                     if ((u->profile == PA_BLUETOOTH_PROFILE_A2DP_SINK) &&
                                            !u->transport_suspended_by_remote) {
-			if(u->sbc_info.sbc_initialized) {
-			    if ((n_written = a2dp_process_render(u)) < 0)
-				goto io_fail;
-			} else {
-			    if ((n_written = a2dp_aptx_process_render(u)) < 0)
-				goto io_fail;
-			}
+				if(u->sbc_info.sbc_initialized) {
+				    if ((n_written = a2dp_process_render(u)) < 0)
+					goto fail;
+				} else {
+				    if ((n_written = a2dp_aptx_process_render(u)) < 0)
+					goto fail;
+				}
                     } else if ((u->profile == PA_BLUETOOTH_PROFILE_A2DP_SINK) &&
                                            u->transport_suspended_by_remote) {
                         a2dp_process_null_render(u);
@@ -1654,7 +1674,11 @@ static void thread_func(void *userdata) {
 #endif
                     } else {
                         if ((n_written = sco_process_render(u)) < 0)
-                            goto io_fail;
+#ifdef __TIZEN_BT__
+				goto fail;
+#else
+				goto io_fail;
+#endif
                     }
 
                     if (n_written == 0)
@@ -1704,6 +1728,7 @@ static void thread_func(void *userdata) {
             goto finish;
         }
 
+#ifndef __TIZEN_BT__
         pollfd = u->rtpoll_item ? pa_rtpoll_item_get_pollfd(u->rtpoll_item, NULL) : NULL;
 
         if (pollfd && (pollfd->revents & ~(POLLOUT|POLLIN))) {
@@ -1727,7 +1752,9 @@ io_fail:
         writable = false;
 
         transport_release(u);
+#endif
     }
+
 
 fail:
     /* If this was no regular exit from the loop we have to continue processing messages until we receive PA_MESSAGE_SHUTDOWN */
@@ -1797,9 +1824,9 @@ static void stop_thread(struct userdata *u) {
     }
 
     if (u->rtpoll) {
-        pa_thread_mq_done(&u->thread_mq);
         pa_rtpoll_free(u->rtpoll);
         u->rtpoll = NULL;
+        pa_thread_mq_done(&u->thread_mq);
     }
 
     if (u->transport) {
@@ -2049,7 +2076,6 @@ static pa_card_profile *create_card_profile(struct userdata *u, const char *uuid
 
         p = PA_CARD_PROFILE_DATA(cp);
         *p = PA_BLUETOOTH_PROFILE_A2DP_SINK;
-#ifndef __TIZEN_BT__
     } else if (pa_streq(uuid, PA_BLUETOOTH_UUID_A2DP_SOURCE)) {
         cp = pa_card_profile_new("a2dp_source", _("High Fidelity Capture (A2DP Source)"), sizeof(pa_bluetooth_profile_t));
         cp->priority = 10;
@@ -2061,6 +2087,7 @@ static pa_card_profile *create_card_profile(struct userdata *u, const char *uuid
 
         p = PA_CARD_PROFILE_DATA(cp);
         *p = PA_BLUETOOTH_PROFILE_A2DP_SOURCE;
+#ifndef __TIZEN_BT__
     } else if (pa_streq(uuid, PA_BLUETOOTH_UUID_HSP_HS) || pa_streq(uuid, PA_BLUETOOTH_UUID_HFP_HF)) {
 	/* TODO: Change this profile's name to headset_head_unit, to reflect the remote
          * device's role and be consistent with the other profiles */

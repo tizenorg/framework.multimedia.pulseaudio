@@ -425,6 +425,19 @@ pa_usec_t pa_smoother_get(pa_smoother *s, pa_usec_t x) {
     return y;
 }
 
+#ifdef __TIZEN__
+void pa_smoother_set_pause_time_offset(pa_smoother *s, pa_usec_t offset) {
+    pa_assert(s);
+
+    if (s->paused)
+        s->pause_time += offset;
+
+#ifdef DEBUG_DATA
+    pa_log_debug("pause time(%llu)", (unsigned long long) s->pause_time);
+#endif
+}
+#endif
+
 void pa_smoother_set_time_offset(pa_smoother *s, pa_usec_t offset) {
     pa_assert(s);
 

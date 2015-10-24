@@ -154,13 +154,13 @@ static pa_stream *pa_stream_new_with_proplist_internal(
         s->buffer_attr.tlength = (uint32_t) pa_usec_to_bytes(250*PA_USEC_PER_MSEC, ss); /* 250ms of buffering */
     else {
         /* FIXME: We assume a worst-case compressed format corresponding to
-         * 48000 Hz, 2 ch, S16 PCM, but this can very well be incorrect */
+         * 44100 Hz, 2 ch, S16 PCM, but this can very well be incorrect */
         pa_sample_spec tmp_ss = {
             .format   = PA_SAMPLE_S16NE,
-            .rate     = 48000,
+            .rate     = 44100,
             .channels = 2,
         };
-        s->buffer_attr.tlength = (uint32_t) pa_usec_to_bytes(250*PA_USEC_PER_MSEC, &tmp_ss); /* 250ms of buffering */
+        s->buffer_attr.tlength = (uint32_t) pa_usec_to_bytes(350*PA_USEC_PER_MSEC, &tmp_ss); /* 350ms of buffering */
     }
     s->buffer_attr.minreq = (uint32_t) -1;
     s->buffer_attr.prebuf = (uint32_t) -1;
@@ -2463,6 +2463,25 @@ int pa_stream_get_time(pa_stream *s, pa_usec_t *r_usec) {
 
     return 0;
 }
+
+#ifdef __TIZEN__
+int pa_stream_set_pause_time_offset(pa_stream *s, pa_usec_t offset) {
+    pa_assert(s);
+    pa_assert(PA_REFCNT_VALUE(s) >= 1);
+
+    PA_CHECK_VALIDITY(s->context, !pa_detect_fork(), PA_ERR_FORKED);
+    PA_CHECK_VALIDITY(s->context, s->state == PA_STREAM_READY, PA_ERR_BADSTATE);
+    PA_CHECK_VALIDITY(s->context, s->direction != PA_STREAM_UPLOAD, PA_ERR_BADSTATE);
+    PA_CHECK_VALIDITY(s->context, s->timing_info_valid, PA_ERR_NODATA);
+    PA_CHECK_VALIDITY(s->context, s->direction != PA_STREAM_PLAYBACK || !s->timing_info.read_index_corrupt, PA_ERR_NODATA);
+    PA_CHECK_VALIDITY(s->context, s->direction != PA_STREAM_RECORD || !s->timing_info.write_index_corrupt, PA_ERR_NODATA);
+
+    if (s->smoother)
+        pa_smoother_set_pause_time_offset(s->smoother, offset);
+
+    return 0;
+}
+#endif
 
 static pa_usec_t time_counter_diff(pa_stream *s, pa_usec_t a, pa_usec_t b, int *negative) {
     pa_assert(s);

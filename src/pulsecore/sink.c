@@ -86,6 +86,22 @@ static void pa_sink_volume_change_flush(pa_sink *s);
 static void pa_sink_volume_change_rewind(pa_sink *s, size_t nbytes);
 
 #ifdef __TIZEN__
+static void stereo_to_mono(pa_memchunk *target) {
+
+    int16_t mono;
+    int16_t *stereoData = NULL;
+    uint16_t i = 0;
+    void *ptr;
+
+    ptr = pa_memblock_acquire(target->memblock);
+    stereoData = (int16_t *)(ptr + target->index);
+
+    for(i=0; i<target->length/(sizeof(int16_t) * 2); i++) {
+        mono = (*(stereoData+2*i)>>1) + (*(stereoData+2*i+1)>>1);
+        *(stereoData+2*i) = *(stereoData+2*i+1) = mono;
+    }
+    pa_memblock_release(target->memblock);
+}
 static void __toggle_open_close_n_write_dump(pa_sink *s, pa_memchunk *target)
 {
     /* open file for dump pcm */
@@ -1494,6 +1510,9 @@ void pa_sink_render_into(pa_sink*s, pa_memchunk *target) {
     inputs_drop(s, info, n, target);
 
 #ifdef __TIZEN__
+    if(s->core->is_mono && (s->sample_spec.channels == 2))
+        stereo_to_mono(target);
+
     __toggle_open_close_n_write_dump(s, target);
 #endif
 

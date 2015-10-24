@@ -47,6 +47,9 @@ pa_usec_t pa_smoother_get(pa_smoother *s, pa_usec_t x);
 /* Translates a time span from the remote time domain to the local one. x = local/system time when to estimate, y_delay = remote time span */
 pa_usec_t pa_smoother_translate(pa_smoother *s, pa_usec_t x, pa_usec_t y_delay);
 
+#ifdef __TIZEN__
+void pa_smoother_set_pause_time_offset(pa_smoother *s, pa_usec_t offset);
+#endif
 void pa_smoother_set_time_offset(pa_smoother *s, pa_usec_t x_offset);
 
 void pa_smoother_pause(pa_smoother *s, pa_usec_t x);

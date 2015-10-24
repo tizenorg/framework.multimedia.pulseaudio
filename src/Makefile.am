@@ -733,8 +733,7 @@ libpulsecommon_@PA_MAJORMINOR@_la_LIBADD += $(DLOG_LIBS)
 endif
 
 if USE_SECURITY
-libpulsecommon_@PA_MAJORMINOR@_la_CFLAGS += $(SECURITY_CFLAGS) -DUSE_SECURITY
-libpulsecommon_@PA_MAJORMINOR@_la_LIBADD += $(SECURITY_LIBS)
+libpulsecommon_@PA_MAJORMINOR@_la_CFLAGS += -DUSE_SECURITY
 endif
 
 ###################################
@@ -1181,7 +1180,8 @@ libprotocol_native_la_CFLAGS += $(DBUS_CFLAGS)
 libprotocol_native_la_LIBADD += $(DBUS_LIBS)
 endif
 if USE_SECURITY
-libprotocol_native_la_CFLAGS += -DUSE_SECURITY
+libprotocol_native_la_CFLAGS += $(SECURITY_CFLAGS) -DUSE_SECURITY
+libprotocol_native_la_LIBADD += $(SECURITY_LIBS)
 endif
 
 if HAVE_ESOUND

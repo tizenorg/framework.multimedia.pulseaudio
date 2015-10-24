@@ -66,6 +66,11 @@ pa_cvolume* pa_cvolume_init(pa_cvolume *a) {
     for (c = 0; c < PA_CHANNELS_MAX; c++)
         a->values[c] = PA_VOLUME_INVALID;
 
+#ifdef PA_EXT_USE_VOLUME_FADING
+    memset(a->fading_token, 0x00, PA_VOLUME_FADING_TOKEN_LEN);
+    a->fading_info = NULL;
+#endif /* PA_EXT_USE_VOLUME_FADING */
+
     return a;
 }
 

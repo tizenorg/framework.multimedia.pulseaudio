@@ -37,7 +37,6 @@
 enum {
     SUBCOMMAND_TEST,
     SUBCOMMAND_PLAY_SAMPLE,
-    SUBCOMMAND_PLAY_SAMPLE_CONTINUOUSLY,
     SUBCOMMAND_MONO,
     SUBCOMMAND_BALANCE,
     SUBCOMMAND_MUTEALL,
@@ -54,7 +53,12 @@ enum {
     SUBCOMMAND_SET_MUTE,
     SUBCOMMAND_IS_AVAILABLE_HIGH_LATENCY,
     SUBCOMMAND_UNLOAD_HDMI,
-
+    SUBCOMMAND_SET_ROUTE_INFO,
+#ifdef TIZEN_TV
+    SUBCOMMAND_SET_MASTER_VOLUME,
+    SUBCOMMAND_SET_MASTER_MUTE,
+    SUBCOMMAND_SET_OUTPUT_DEVICE,
+#endif /* end of TIZEN_TV */
 };
 
 static void ext_policy_test_cb(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_tagstruct *t, void *userdata) {
@@ -190,51 +194,6 @@ pa_operation *pa_ext_policy_play_sample (
 
     return o;
 }
-
-#ifdef BURST_SHOT
-pa_operation *pa_ext_policy_play_sample_continuously (
-        pa_context *c,
-        const char *name,
-        int start,
-        uint32_t volume_type,
-        uint32_t gain_type,
-        uint32_t volume_level,
-        pa_usec_t interval,
-        pa_ext_policy_play_sample_cb_t cb,
-        void *userdata) {
-
-    uint32_t tag;
-    pa_operation *o = NULL;
-    pa_tagstruct *t = NULL;
-
-    pa_assert(c);
-    pa_assert(PA_REFCNT_VALUE(c) >= 1);
-
-    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
-    PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
-    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 14, PA_ERR_NOTSUPPORTED);
-
-    o = pa_operation_new(c, NULL, (pa_operation_cb_t) cb, userdata);
-
-    t = pa_tagstruct_command(c, PA_COMMAND_EXTENSION, &tag);
-    pa_tagstruct_putu32(t, PA_INVALID_INDEX);
-    pa_tagstruct_puts(t, "module-policy");
-    pa_tagstruct_putu32(t, SUBCOMMAND_PLAY_SAMPLE_CONTINUOUSLY);
-
-    pa_tagstruct_puts(t, name);
-    pa_tagstruct_put_boolean(t, !!start);
-    pa_tagstruct_putu32(t, volume_type);
-    pa_tagstruct_putu32(t, (gain_type >> 8));
-    pa_tagstruct_putu32(t, volume_level);
-    pa_tagstruct_put_usec(t, interval);
-
-    pa_pstream_send_tagstruct(c->pstream, t);
-    pa_pdispatch_register_reply(c->pdispatch, tag, DEFAULT_TIMEOUT, ext_policy_play_sample_cb, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
-
-    return o;
-}
-
-#endif
 
 pa_operation *pa_ext_policy_set_mono (
         pa_context *c,
@@ -970,3 +929,134 @@ pa_operation *pa_ext_policy_unload_hdmi (
 
     return o;
 }
+
+pa_operation *pa_ext_policy_set_route_info (
+        pa_context *c,
+        const char *key,
+        const char *value,
+        pa_context_success_cb_t cb,
+        void *userdata) {
+
+    uint32_t tag;
+    pa_operation *o = NULL;
+    pa_tagstruct *t = NULL;
+
+    pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 14, PA_ERR_NOTSUPPORTED);
+
+    o = pa_operation_new(c, NULL, (pa_operation_cb_t) cb, userdata);
+
+    t = pa_tagstruct_command(c, PA_COMMAND_EXTENSION, &tag);
+    pa_tagstruct_putu32(t, PA_INVALID_INDEX);
+    pa_tagstruct_puts(t, "module-policy");
+    pa_tagstruct_putu32(t, SUBCOMMAND_SET_ROUTE_INFO);
+    pa_tagstruct_puts(t, key);
+    pa_tagstruct_puts(t, value);
+
+    pa_pstream_send_tagstruct(c->pstream, t);
+    pa_pdispatch_register_reply(c->pdispatch, tag, DEFAULT_TIMEOUT, pa_context_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
+
+    return o;
+}
+
+#ifdef TIZEN_TV
+pa_operation *pa_ext_policy_set_master_volume (
+        pa_context *c,
+        uint32_t volume,
+        pa_context_success_cb_t cb,
+        void *userdata) {
+
+    uint32_t tag;
+    pa_operation *o = NULL;
+    pa_tagstruct *t = NULL;
+
+    pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 14, PA_ERR_NOTSUPPORTED);
+
+    o = pa_operation_new(c, NULL, (pa_operation_cb_t) cb, userdata);
+
+    t = pa_tagstruct_command(c, PA_COMMAND_EXTENSION, &tag);
+    pa_tagstruct_putu32(t, PA_INVALID_INDEX);
+    pa_tagstruct_puts(t, "module-policy");
+    pa_tagstruct_putu32(t, SUBCOMMAND_SET_MASTER_VOLUME);
+
+    pa_tagstruct_putu32(t, volume);
+
+    pa_pstream_send_tagstruct(c->pstream, t);
+    pa_pdispatch_register_reply(c->pdispatch, tag, DEFAULT_TIMEOUT, pa_context_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
+
+    return o;
+}
+
+pa_operation *pa_ext_policy_set_master_mute (
+        pa_context *c,
+        uint32_t mute,
+        pa_context_success_cb_t cb,
+        void *userdata) {
+
+    uint32_t tag;
+    pa_operation *o = NULL;
+    pa_tagstruct *t = NULL;
+
+    pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 14, PA_ERR_NOTSUPPORTED);
+
+    o = pa_operation_new(c, NULL, (pa_operation_cb_t) cb, userdata);
+
+    t = pa_tagstruct_command(c, PA_COMMAND_EXTENSION, &tag);
+    pa_tagstruct_putu32(t, PA_INVALID_INDEX);
+    pa_tagstruct_puts(t, "module-policy");
+    pa_tagstruct_putu32(t, SUBCOMMAND_SET_MASTER_MUTE);
+
+    pa_tagstruct_putu32(t, mute);
+
+    pa_pstream_send_tagstruct(c->pstream, t);
+    pa_pdispatch_register_reply(c->pdispatch, tag, DEFAULT_TIMEOUT, pa_context_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
+
+    return o;
+}
+
+pa_operation *pa_ext_policy_set_output_device (
+        pa_context *c,
+        uint32_t device,
+        pa_context_success_cb_t cb,
+        void *userdata) {
+
+    uint32_t tag;
+    pa_operation *o = NULL;
+    pa_tagstruct *t = NULL;
+
+    pa_assert(c);
+    pa_assert(PA_REFCNT_VALUE(c) >= 1);
+
+    PA_CHECK_VALIDITY_RETURN_NULL(c, !pa_detect_fork(), PA_ERR_FORKED);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->state == PA_CONTEXT_READY, PA_ERR_BADSTATE);
+    PA_CHECK_VALIDITY_RETURN_NULL(c, c->version >= 14, PA_ERR_NOTSUPPORTED);
+
+    o = pa_operation_new(c, NULL, (pa_operation_cb_t) cb, userdata);
+
+    t = pa_tagstruct_command(c, PA_COMMAND_EXTENSION, &tag);
+    pa_tagstruct_putu32(t, PA_INVALID_INDEX);
+    pa_tagstruct_puts(t, "module-policy");
+    pa_tagstruct_putu32(t, SUBCOMMAND_SET_OUTPUT_DEVICE);
+
+    pa_tagstruct_putu32(t, device);
+
+    pa_pstream_send_tagstruct(c->pstream, t);
+    pa_pdispatch_register_reply(c->pdispatch, tag, DEFAULT_TIMEOUT, pa_context_simple_ack_callback, pa_operation_ref(o), (pa_free_cb_t) pa_operation_unref);
+
+    return o;
+}
+#endif /* end of TIZEN_TV */

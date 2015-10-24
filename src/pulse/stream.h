@@ -701,6 +701,11 @@ pa_operation* pa_stream_set_name(pa_stream *s, const char *name, pa_stream_succe
  * see pa_stream_get_timing_info(). */
 int pa_stream_get_time(pa_stream *s, pa_usec_t *r_usec);
 
+#ifdef __TIZEN__
+/** Set offset of pause time when PA_STREAM_INTERPOLATE_TIMING is set. */
+int pa_stream_set_pause_time_offset(pa_stream *s, pa_usec_t offset);
+#endif
+
 /** Determine the total stream latency. This function is based on
  * pa_stream_get_time().
  *

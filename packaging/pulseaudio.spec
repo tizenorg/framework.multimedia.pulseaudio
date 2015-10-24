@@ -2,7 +2,7 @@
 %define pulseversion  4.0
 Name:       pulseaudio
 Summary:    Improved Linux sound server
-Version:    4.0.154
+Version:    4.0.208
 Release:    0
 Group:      Multimedia/PulseAudio
 License:    LGPL-2.1
@@ -11,7 +11,9 @@ Source0:    http://0pointer.de/lennart/projects/pulseaudio/pulseaudio-%{version}
 Source1:    pulseaudio.service
 Requires:   systemd >= 183
 Requires:   dbus
+%if "%{?tizen_profile_name}" != "tv"
 Requires:   bluez
+%endif
 Requires(preun):  /usr/bin/systemctl
 Requires(post):   /usr/bin/systemctl
 Requires(postun): /usr/bin/systemctl
@@ -34,12 +36,16 @@ BuildRequires:  libtool-ltdl-devel
 BuildRequires:  libtool
 BuildRequires:  intltool
 BuildRequires:  fdupes
-BuildRequires:  pkgconfig(json)
+BuildRequires:  pkgconfig(json-c)
+%if "%{?tizen_profile_name}" != "tv"
 BuildRequires:  pkgconfig(sbc)
+%endif
 BuildRequires:  pkgconfig(iniparser)
 
-%define conf_option --disable-static --enable-alsa --disable-ipv6 --disable-oss-output --disable-oss-wrapper --enable-dlog --enable-bluez5 --disable-bluez4 --disable-hal --disable-hal-compat --disable-legacy-runtime-dir --with-udev-rules-dir=/usr/lib/udev/rules.d --disable-systemd
+%define conf_option --disable-static --enable-alsa --disable-ipv6 --disable-oss-output --disable-oss-wrapper --enable-dlog --disable-bluez4 --disable-hal --disable-hal-compat --disable-legacy-runtime-dir --with-udev-rules-dir=/usr/lib/udev/rules.d --disable-systemd
 %bcond_with pulseaudio_with_bluez5
+
+%define pulse_runtime_dir /opt/var/lib/pulse
 
 %description
 PulseAudio is a sound server for Linux and other Unix like operating
@@ -108,10 +114,17 @@ export FFLAGS="$FFLAGS -DTIZEN_DEBUG_ENABLE"
 
 %if "%{?tizen_profile_name}" == "wearable"
 	echo "tizen profile werable"
-	export CFLAGS+=" -DTIZEN_MICRO -DPM_ASYNC -DPRIMARY_VOLUME -DADJUST_ANDROID_BITPOOL -DBURST_SHOT"
-%elseif "%{?tizen_profile_name}" == "mobile"
+	export CFLAGS+=" -DTIZEN_MICRO -DPM_ASYNC -DPRIMARY_VOLUME -DADJUST_ANDROID_BITPOOL"
+%else
+%if "%{?tizen_profile_name}" == "mobile"
 	echo "tizen profile mobile"
-	export CFLAGS+=" -DTIZEN_MOBILE -DPM_ASYNC -DPRIMARY_VOLUME -DBURST_SHOT"
+	export CFLAGS+=" -DTIZEN_MOBILE -DPM_ASYNC -DPRIMARY_VOLUME"
+%endif
+%endif
+
+%if "%{?tizen_profile_name}" == "tv"
+	echo "tizen profile TV"
+	export CFLAGS+=" -DTIZEN_TV"
 %endif
 
 unset LD_AS_NEEDED
@@ -125,6 +138,11 @@ export LDFLAGS+="-Wl,--no-as-needed"
 %else
 %reconfigure %{conf_option} --enable-security
 %endif
+
+%if "%{?tizen_profile_name}" != "tv"
+%reconfigure %{conf_option} --enable-security --enable-bluez5
+%endif
+
 make %{?_smp_mflags}
 
 %install
@@ -139,6 +157,8 @@ mkdir -p %{buildroot}%{_libdir}/systemd/system
 install -m 644 %{SOURCE1} %{buildroot}%{_libdir}/systemd/system/pulseaudio.service
 mkdir -p  %{buildroot}%{_libdir}/systemd/system/multi-user.target.wants
 ln -s  ../pulseaudio.service  %{buildroot}%{_libdir}/systemd/system/multi-user.target.wants/pulseaudio.service
+mkdir -p %{buildroot}%{_libdir}/tmpfiles.d
+cp pulseaudio.conf %{buildroot}%{_libdir}/tmpfiles.d/pulseaudio.conf
 
 pushd %{buildroot}/etc/pulse/filter
 ln -sf filter_8000_44100.dat filter_11025_44100.dat
@@ -157,6 +177,7 @@ rm -f %{buildroot}/usr/bin/start-pulseaudio-x11
 %fdupes  %{buildroot}/%{_datadir}
 %fdupes  %{buildroot}/%{_includedir}
 
+mkdir -p %{buildroot}%{pulse_runtime_dir}
 
 %preun
 if [ $1 == 0 ]; then
@@ -165,10 +186,6 @@ fi
 
 %post
 /sbin/ldconfig
-
-/usr/bin/vconftool set -t int memory/Sound/SoundCaptureStatus 0 -g 29 -f -i -s system::vconf_multimedia
-/usr/bin/vconftool set -t int memory/private/sound/pcm_dump 0 -g 29 -f -i -s system::vconf_multimedia
-/usr/bin/vconftool set -t int memory/private/sound/burstshot 0 -g 29 -f -i -s system::vconf_multimedia
 
 systemctl daemon-reload
 if [ $1 == 1 ]; then
@@ -209,6 +226,7 @@ systemctl daemon-reload
 %exclude %{_datadir}/pulseaudio/alsa-mixer/profile-sets/*
 %{_bindir}/pamon
 %{_sysconfdir}/dbus-1/system.d/pulseaudio-system.conf
+%{_libdir}/tmpfiles.d/pulseaudio.conf
 #list all modules
 %{_libdir}/pulse-%{pulseversion}/modules/libalsa-util.so
 %{_libdir}/pulse-%{pulseversion}/modules/libcli.so
@@ -294,6 +312,7 @@ systemctl daemon-reload
 %{_libdir}/pulse-%{pulseversion}/modules/module-virtual-source.so
 %{_libdir}/pulse-%{pulseversion}/modules/module-virtual-surround-sink.so
 %{_datadir}/license/%{name}
+%attr(700,pulse,pulse) %{pulse_runtime_dir}
 
 %files libs
 %manifest pulseaudio_shared.manifest
@@ -334,12 +353,14 @@ systemctl daemon-reload
 
 %files module-bluetooth
 %manifest pulseaudio_shared.manifest
+%if "%{?tizen_profile_name}" != "tv"
 %{_libdir}/pulse-%{pulseversion}/modules/module-bluetooth-discover.so
 %{_libdir}/pulse-%{pulseversion}/modules/module-bluetooth-policy.so
 %{_libdir}/pulse-%{pulseversion}/modules/module-bluez5-discover.so
 %{_libdir}/pulse-%{pulseversion}/modules/module-bluez5-device.so
 %{_libdir}/pulse-%{pulseversion}/modules/libbluez5-util.so
-%exclude /etc/bash_completion.d/pulseaudio-bash-completion.sh
 %{_libdir}/pulse-%{pulseversion}/modules/module-bluetooth-policy.so
 %{_datadir}/license/pulseaudio-module-bluetooth
+%endif
+%exclude /etc/bash_completion.d/pulseaudio-bash-completion.sh
 

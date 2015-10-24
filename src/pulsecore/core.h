@@ -195,6 +195,7 @@ struct pa_core {
     pa_bool_t dump_sink_input;
     pa_bool_t dump_source;
     pa_bool_t dump_source_output;
+    pa_bool_t is_mono;
 #endif
 };
 

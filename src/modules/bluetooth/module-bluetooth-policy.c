@@ -89,7 +89,11 @@ static pa_hook_result_t source_put_hook_callback(pa_core *c, pa_source *source, 
     }
 
     /* Load module-loopback */
-    args = pa_sprintf_malloc("source=\"%s\" source_dont_move=\"true\" sink_input_properties=\"media.role=%s\"", source->name, role);
+#ifdef __TIZEN__
+    args = pa_sprintf_malloc("source=\"%s\" source_dont_move=\"true\" sink_input_properties=\"media.role=%s media.policy=auto media.tizen_volume_type=4\" adjust_time=0", source->name, role);
+#else
+    args = pa_sprintf_malloc("source=\"%s\" source_dont_move=\"true\" sink_input_properties=\"media.role=%s\" adjust_time=0", source->name, role);
+#endif
     (void) pa_module_load(c, "module-loopback", args);
     pa_xfree(args);
 
@@ -126,7 +130,7 @@ static pa_hook_result_t sink_put_hook_callback(pa_core *c, pa_sink *sink, void *
     }
 
     /* Load module-loopback */
-    args = pa_sprintf_malloc("sink=\"%s\" sink_dont_move=\"true\" source_output_properties=\"media.role=%s\"", sink->name, role);
+    args = pa_sprintf_malloc("sink=\"%s\" sink_dont_move=\"true\" source_output_properties=\"media.role=%s\" adjust_time=0", sink->name, role);
     (void) pa_module_load(c, "module-loopback", args);
     pa_xfree(args);
 
@@ -147,7 +151,7 @@ static pa_card_profile *find_best_profile(pa_card *card) {
 
         if (result == NULL ||
             (profile->available == PA_AVAILABLE_YES && result->available == PA_AVAILABLE_UNKNOWN) ||
-            (profile->available == result->available && profile->priority > profile->priority))
+            (profile->available == result->available && profile->priority > result->priority))
             result = profile;
     }
 

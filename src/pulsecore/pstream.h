@@ -64,7 +64,7 @@ void pa_pstream_set_revoke_callback(pa_pstream *p, pa_pstream_block_id_cb_t cb, 
 pa_bool_t pa_pstream_is_pending(pa_pstream *p);
 
 #ifdef USE_SECURITY
-pa_bool_t pa_pstream_check_security(pa_pstream *p);
+pa_bool_t pa_pstream_get_ifd(pa_pstream *p, int *ifd);
 #endif /* USE_SECURITY */
 
 void pa_pstream_enable_shm(pa_pstream *p, pa_bool_t enable);

@@ -324,7 +324,11 @@ void pa_alsa_decibel_fix_dump(pa_alsa_decibel_fix *db_fix);
 pa_alsa_mapping *pa_alsa_mapping_get(pa_alsa_profile_set *ps, const char *name);
 
 pa_alsa_profile_set* pa_alsa_profile_set_new(const char *fname, const pa_channel_map *bonus);
+#ifdef __TIZEN__
+void pa_alsa_profile_set_probe(pa_alsa_profile_set *ps, const char *dev_id, pa_core *core, const pa_sample_spec *ss, unsigned default_n_fragments, unsigned default_fragment_size_msec);
+#else
 void pa_alsa_profile_set_probe(pa_alsa_profile_set *ps, const char *dev_id, const pa_sample_spec *ss, unsigned default_n_fragments, unsigned default_fragment_size_msec);
+#endif
 void pa_alsa_profile_set_free(pa_alsa_profile_set *s);
 void pa_alsa_profile_set_dump(pa_alsa_profile_set *s);
 void pa_alsa_profile_set_drop_unsupported(pa_alsa_profile_set *s);

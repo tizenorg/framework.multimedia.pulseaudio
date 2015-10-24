@@ -4227,6 +4227,9 @@ static void profile_finalize_probing(pa_alsa_profile *to_be_finalized, pa_alsa_p
 static snd_pcm_t* mapping_open_pcm(pa_alsa_mapping *m,
                                    const pa_sample_spec *ss,
                                    const char *dev_id,
+#ifdef __TIZEN__
+                                   pa_core *core,
+#endif
                                    int mode,
                                    unsigned default_n_fragments,
                                    unsigned default_fragment_size_msec) {
@@ -4244,7 +4247,7 @@ static snd_pcm_t* mapping_open_pcm(pa_alsa_mapping *m,
 
     return pa_alsa_open_by_template(
 #ifdef __TIZEN__
-                              m->ucm_context.ucm->core,
+                              core,
 #endif
                               m->device_strings, dev_id, NULL, &try_ss,
                               &try_map, mode, &try_period_size,
@@ -4271,6 +4274,9 @@ static void paths_drop_unsupported(pa_hashmap* h) {
 void pa_alsa_profile_set_probe(
         pa_alsa_profile_set *ps,
         const char *dev_id,
+#ifdef __TIZEN__
+        pa_core *core,
+#endif
         const pa_sample_spec *ss,
         unsigned default_n_fragments,
         unsigned default_fragment_size_msec) {
@@ -4331,6 +4337,9 @@ void pa_alsa_profile_set_probe(
 
                     pa_log_debug("Checking for playback on %s (%s)", m->description, m->name);
                     if (!(m->output_pcm = mapping_open_pcm(m, ss, dev_id,
+#ifdef __TIZEN__
+                                                           core,
+#endif
                                                            SND_PCM_STREAM_PLAYBACK,
                                                            default_n_fragments,
                                                            default_fragment_size_msec))) {
@@ -4352,6 +4361,9 @@ void pa_alsa_profile_set_probe(
 
                     pa_log_debug("Checking for recording on %s (%s)", m->description, m->name);
                     if (!(m->input_pcm = mapping_open_pcm(m, ss, dev_id,
+#ifdef __TIZEN__
+                                                          core,
+#endif
                                                           SND_PCM_STREAM_CAPTURE,
                                                           default_n_fragments,
                                                           default_fragment_size_msec))) {

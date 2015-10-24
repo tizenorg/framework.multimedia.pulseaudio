@@ -699,7 +699,11 @@ int pa__init(pa_module *m) {
 
     u->profile_set->ignore_dB = ignore_dB;
 
+#ifdef __TIZEN__
+    pa_alsa_profile_set_probe(u->profile_set, u->device_id, m->core, &m->core->default_sample_spec, m->core->default_n_fragments, m->core->default_fragment_size_msec);
+#else
     pa_alsa_profile_set_probe(u->profile_set, u->device_id, &m->core->default_sample_spec, m->core->default_n_fragments, m->core->default_fragment_size_msec);
+#endif
     pa_alsa_profile_set_dump(u->profile_set);
 
     pa_card_new_data_init(&data);

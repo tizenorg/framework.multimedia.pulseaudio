@@ -105,9 +105,9 @@ static void context_state_cb(pa_context *c, void *userdata) {
 }
 
 static void success_context_cb(pa_context *c, int success, void *userdata) {
-	pa_simple *p = userdata;
-	pa_assert(c);
-	pa_assert(p);
+    pa_simple *p = userdata;
+    pa_assert(c);
+    pa_assert(p);
 
     p->operation_success = success;
     pa_threaded_mainloop_signal(p->mainloop, 0);
@@ -562,8 +562,6 @@ int pa_simple_flush(pa_simple *p, int *rerror) {
 
     pa_assert(p);
 
-    CHECK_VALIDITY_RETURN_ANY(rerror, p->direction == PA_STREAM_PLAYBACK, PA_ERR_BADSTATE, -1);
-
     pa_threaded_mainloop_lock(p->mainloop);
     CHECK_DEAD_GOTO(p, rerror, unlock_and_fail);
 
@@ -642,7 +640,7 @@ int pa_simple_get_stream_index(pa_simple *p, unsigned int *idx, int *rerror) {
 
     CHECK_DEAD_GOTO(p, rerror, unlock_and_fail);
 
-	*idx = pa_stream_get_index(p->stream);
+    *idx = pa_stream_get_index(p->stream);
 
     pa_threaded_mainloop_unlock(p->mainloop);
     return 0;
@@ -733,28 +731,28 @@ unlock_and_fail:
 }
 
 pa_usec_t pa_simple_get_final_latency(pa_simple *p, int *rerror) {
-	pa_usec_t t;
+    pa_usec_t t;
 
-	pa_assert(p);
+    pa_assert(p);
 
-	CHECK_DEAD_GOTO(p, rerror, fail);
+    CHECK_DEAD_GOTO(p, rerror, fail);
 
-	if (p->context->version >= 13) {
-		if (p->direction == PA_STREAM_PLAYBACK) {
-			t = (pa_bytes_to_usec(p->stream->buffer_attr.tlength, &p->stream->sample_spec) + p->stream->timing_info.configured_sink_usec);
-		} else if (p->direction == PA_STREAM_RECORD) {
-			t = (pa_bytes_to_usec(p->stream->buffer_attr.fragsize, &p->stream->sample_spec) + p->stream->timing_info.configured_source_usec);
-		} else {
-			t = (pa_usec_t) -1;
-		}
-	} else {
-		t = (pa_usec_t) -1;
-	}
+    if (p->context->version >= 13) {
+        if (p->direction == PA_STREAM_PLAYBACK) {
+            t = (pa_bytes_to_usec(p->stream->buffer_attr.tlength, &p->stream->sample_spec) + p->stream->timing_info.configured_sink_usec);
+        } else if (p->direction == PA_STREAM_RECORD) {
+            t = (pa_bytes_to_usec(p->stream->buffer_attr.fragsize, &p->stream->sample_spec) + p->stream->timing_info.configured_source_usec);
+        } else {
+            t = (pa_usec_t) -1;
+        }
+    } else {
+        t = (pa_usec_t) -1;
+    }
 
-	return t;
+    return t;
 
 fail:
-	return (pa_usec_t) -1;
+    return (pa_usec_t) -1;
 }
 
 #ifdef __TIZEN__
@@ -793,7 +791,7 @@ unlock_and_fail:
 }
 
 int pa_simple_is_corked(pa_simple *p) {
-	int is_cork;
+    int is_cork;
     pa_assert(p);
 
     pa_threaded_mainloop_lock(p->mainloop);

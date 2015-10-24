@@ -44,10 +44,6 @@
 
 #include "pstream.h"
 
-#ifdef USE_SECURITY
-#include <security-server.h>
-#endif /* USE_SECURITY */
-
 /* We piggyback information if audio data blocks are stored in SHM on the seek mode */
 #define PA_FLAG_SHMDATA    0x80000000LU
 #define PA_FLAG_SHMRELEASE 0x40000000LU
@@ -964,30 +960,20 @@ pa_bool_t pa_pstream_is_pending(pa_pstream *p) {
 }
 
 #ifdef USE_SECURITY
-pa_bool_t pa_pstream_check_security(pa_pstream *p) {
-    int ifd, ofd;
-    int secu_ret = 0;
-    pa_bool_t ret = FALSE;
+pa_bool_t pa_pstream_get_ifd(pa_pstream *p, int *ifd) {
+    pa_bool_t ret = TRUE;
 
     pa_assert(p);
     pa_assert(PA_REFCNT_VALUE(p) > 0);
 
     if (p->dead) {
         pa_log_warn("current pstream is dead");
+        ret = FALSE;
     } else {
         /* Get socket fd from channel io */
-        ifd = pa_iochannel_get_recv_fd(p->io);
-        ofd = pa_iochannel_get_send_fd(p->io);
-
-        /* Check security by socket fd */
-        /* Note: assume that ifd and ofd is same, check with ifd here */
-        secu_ret = security_server_check_privilege_by_sockfd(ifd, "pulseaudio::record", "r");
-        pa_log_warn("ifd(%d), ofd(%d), security check ret(%d)", ifd, ofd, secu_ret);
-        if (secu_ret == SECURITY_SERVER_API_SUCCESS) {
-            ret = TRUE;
-        }
+        if(ifd)
+            *ifd = pa_iochannel_get_recv_fd(p->io);
     }
-
     return ret;
 }
 #endif /* USE_SECURITY */

@@ -346,17 +346,71 @@ int pa_shm_attach_ro(pa_shm *m, unsigned id) {
 
 #endif /* HAVE_SHM_OPEN */
 
+#ifdef __TIZEN__
+
+#define DEFAULT_MAX_PID 32768
+#define MAX_STR_LEN 32 /* for temporal buffer length */
+
+static int _get_pid_max()
+{
+    FILE* fp = NULL;
+    int pid_max = DEFAULT_MAX_PID;
+    char tmp[MAX_STR_LEN];
+
+    if (fp = fopen("/proc/sys/kernel/pid_max", "r")) {
+        if (fgets(tmp, MAX_STR_LEN, fp))
+            pid_max = atoi(tmp);
+
+        fclose(fp);
+    }
+
+    return pid_max;
+}
+
+static pa_bool_t _is_process_alive(pid_t pid, int max_pid) {
+    char tmp[MAX_STR_LEN] = { 0, };
+    int ret = -1;
+
+    if (pid == 0)
+        return TRUE; /* reserved swapper */
+    if (pid < 0 || pid > max_pid)
+        return FALSE;
+
+    snprintf(tmp, sizeof(tmp), "/proc/%d", pid);
+
+    ret = access(tmp, F_OK);
+    if (ret == -1) {
+        if (errno == ENOENT) {
+            pa_log_warn("/proc/%d not exist", pid);
+            return FALSE;
+        } else {
+            pa_log_warn("/proc/%d access errno[%d]", pid, errno);
+            /* error occured but file exists */
+        }
+    }
+
+    return TRUE;
+}
+#endif /* __TIZEN__ */
+
 int pa_shm_cleanup(void) {
 
 #ifdef HAVE_SHM_OPEN
 #ifdef SHM_PATH
     DIR *d;
     struct dirent *de;
+#ifdef __TIZEN__
+    int max_pid;
+#endif
 
     if (!(d = opendir(SHM_PATH))) {
         pa_log_warn("Failed to read "SHM_PATH": %s", pa_cstrerror(errno));
         return -1;
     }
+
+#ifdef __TIZEN__
+    max_pid = _get_pid_max();
+#endif
 
     while ((de = readdir(d))) {
         pa_shm seg;
@@ -395,7 +449,11 @@ int pa_shm_cleanup(void) {
             continue;
         }
 
+#ifdef __TIZEN__
+        if (_is_process_alive(pid, max_pid)) {
+#else
         if (kill(pid, 0) == 0 || errno != ESRCH) {
+#endif
             pa_shm_free(&seg);
             continue;
         }

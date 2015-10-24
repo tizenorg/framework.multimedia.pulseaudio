@@ -93,11 +93,11 @@ static pa_hook_result_t device_connection_changed_cb(pa_bluetooth_discovery *y, 
 #endif
 
 #ifdef __TIZEN_BT__
-	if (pa_bluetooth_device_sink_transport_connected(d) == true) {
-		char *tmp = pa_sprintf_malloc("%s profile=\"a2dp_sink\"", args);
-		pa_xfree(args);
-		args = tmp;
-	}
+	if (pa_bluetooth_device_sink_transport_connected(d) == true)
+		args = pa_sprintf_malloc("%s profile=\"a2dp_sink\"", args);
+
+	if (pa_bluetooth_device_source_transport_connected(d) == true)
+		args = pa_sprintf_malloc("%s profile=\"a2dp_source\"", args);
 #endif
 
         pa_log_debug("Loading module-bluez5-device %s", args);

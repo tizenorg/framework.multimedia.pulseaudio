@@ -226,6 +226,22 @@ typedef enum audio_gain {
     AUDIO_GAIN_TYPE_MAX,
 } audio_gain_t;
 
+#ifdef TIZEN_TV
+/* Device mute control in TV */
+
+typedef enum
+{
+    AUDIO_TV_OUTPUT_SPEAKER,           /**< Sound tv output route internal speaker */
+    AUDIO_TV_OUTPUT_EXTERNAL_SPEAKER,           /**< Sound tv output route speaker*/
+    AUDIO_TV_OUTPUT_RECEIVER,           /**< Sound tv output route receiver */
+    AUDIO_TV_OUTPUT_SOUND_SHARE,           /**< Sound tv output route sound share */
+    AUDIO_TV_OUTPUT_MULTIROOM_LINK,           /**< Sound tv output route network speakers */
+    AUDIO_TV_OUTPUT_BT_HEADSET,           /**< Sound tv output route BT headset */
+    AUDIO_TV_OUTPUT_DUAL_BT_SPK,       /**< Sound tv output route BT headset and speaker */
+    AUDIO_TV_OUTPUT_MAX,
+} audio_output_device_t;
+#endif /* end of TIZEN_TV */
+
 typedef struct audio_stream_info {
     char *name;
     uint32_t samplerate;
@@ -268,7 +284,12 @@ typedef struct audio_interface {
     audio_return_t (*alsa_pcm_open)(void *userdata, void **pcm_handle, char *device_name, uint32_t direction, int mode);
     audio_return_t (*alsa_pcm_close)(void *userdata, void *pcm_handle);
     audio_return_t (*set_mixer_value_string)(void *userdata, const char* ctl, const char* value);
-
+    audio_return_t (*set_route_info)(void *userdata, const char* key, const char* value);
+#ifdef TIZEN_TV
+    audio_return_t (*set_speaker_gain)(void *userdata, uint32_t level);
+    audio_return_t (*set_amp_mute)(void *userdata, uint32_t mute);
+    audio_return_t (*set_output_device)(void *userdata, uint32_t device);
+#endif /* end of TIZEN_TV */
 } audio_interface_t;
 
 int audio_get_revision (void);
@@ -288,5 +309,10 @@ audio_return_t audio_set_session (void *userdata, uint32_t session, uint32_t sub
 audio_return_t audio_alsa_pcm_open (void *userdata, void **pcm_handle, char *device_name, uint32_t direction, int mode);
 audio_return_t audio_alsa_pcm_close (void *userdata, void *pcm_handle);
 audio_return_t audio_set_route (void *userdata, uint32_t session, uint32_t subsession, uint32_t device_in, uint32_t device_out, uint32_t route_flag);
-
+audio_return_t audio_set_route_info(void *userdata, const char* key, const char* value);
+#ifdef TIZEN_TV
+audio_return_t audio_set_speaker_gain (void *userdata, uint32_t level);
+audio_return_t audio_set_amp_mute (void *userdata, uint32_t mute);
+audio_return_t audio_set_output_device (void *userdata, uint32_t device);
+#endif /* end of TIZEN_TV */
 #endif

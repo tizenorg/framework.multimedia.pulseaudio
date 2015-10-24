@@ -1730,6 +1730,7 @@ char *pa_get_runtime_dir(void) {
     }
 
     /* Use the XDG standard for the runtime directory. */
+#ifndef __TIZEN__
     d = getenv("XDG_RUNTIME_DIR");
     if (d) {
         k = pa_sprintf_malloc("%s" PA_PATH_SEP "pulse", d);
@@ -1741,7 +1742,7 @@ char *pa_get_runtime_dir(void) {
 
         return k;
     }
-
+#endif
     /* XDG_RUNTIME_DIR wasn't set, use the old legacy fallback */
     d = get_pulse_home();
     if (!d)

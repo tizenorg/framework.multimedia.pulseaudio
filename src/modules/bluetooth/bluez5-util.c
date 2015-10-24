@@ -366,6 +366,23 @@ bool pa_bluetooth_device_sink_transport_connected(const pa_bluetooth_device *d) 
 
     return false;
 }
+
+bool pa_bluetooth_device_source_transport_connected(const pa_bluetooth_device *d) {
+	unsigned i;
+
+	pa_assert(d);
+
+	if (d->device_info_valid != 1)
+		return false;
+
+	for (i = 0; i < PA_BLUETOOTH_PROFILE_COUNT; i++)
+		if (d->transports[i] &&
+			d->transports[i]->profile == PA_BLUETOOTH_PROFILE_A2DP_SOURCE &&
+			d->transports[i]->state != PA_BLUETOOTH_TRANSPORT_STATE_DISCONNECTED)
+			return true;
+
+	return false;
+}
 #endif
 
 static int transport_state_from_string(const char* value, pa_bluetooth_transport_state_t *state) {
@@ -915,10 +932,8 @@ static void parse_interfaces_and_properties(pa_bluetooth_discovery *y, DBusMessa
             if (!a->address)
                 return;
 
-            register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, PA_BLUETOOTH_UUID_A2DP_SOURCE);
-#ifndef __TIZEN_BT__
             register_endpoint(y, path, A2DP_SINK_ENDPOINT, PA_BLUETOOTH_UUID_A2DP_SINK);
-#endif
+            register_endpoint(y, path, A2DP_SOURCE_ENDPOINT, PA_BLUETOOTH_UUID_A2DP_SOURCE);
 #ifdef BLUETOOTH_APTX_SUPPORT
             if (aptx_handle)
 		register_endpoint(y, path, A2DP_APTX_SOURCE_ENDPOINT, PA_BLUETOOTH_UUID_A2DP_SOURCE);
@@ -1482,7 +1497,7 @@ static DBusMessage *endpoint_set_configuration(DBusConnection *conn, DBusMessage
         d = device_create(y, dev_path);
     }
 
-    if (d->transports[p] != NULL) {
+    if (p == PA_BLUETOOTH_PROFILE_OFF || d->transports[p] != NULL) {
         pa_log_error("Cannot configure transport %s because profile %s is already used", path, pa_bluetooth_profile_to_string(p));
         goto fail2;
     }

@@ -60,6 +60,11 @@
 
 #include "protocol-native.h"
 
+#ifdef USE_SECURITY
+#include <security-server.h>
+#endif /* USE_SECURITY */
+
+
 /* #define PROTOCOL_NATIVE_DEBUG */
 
 /* Kick a client if it doesn't authenticate within this time */
@@ -2365,6 +2370,10 @@ static void command_create_record_stream(pa_pdispatch *pd, uint32_t command, uin
     pa_format_info *format;
     pa_idxset *formats = NULL;
     uint32_t i;
+#ifdef USE_SECURITY
+    int ifd;
+    int secu_ret = 0;
+#endif
 
     pa_native_connection_assert_ref(c);
     pa_assert(t);
@@ -2390,7 +2399,12 @@ static void command_create_record_stream(pa_pdispatch *pd, uint32_t command, uin
     CHECK_VALIDITY_GOTO(c->pstream, !source_name || source_index == PA_INVALID_INDEX, tag, PA_ERR_INVALID, finish);
 
 #ifdef USE_SECURITY
-    CHECK_VALIDITY(c->pstream, pa_pstream_check_security(c->pstream), tag, PA_ERR_ACCESS_BY_SECURITY);
+    if (pa_pstream_get_ifd(c->pstream, &ifd) == TRUE) {
+        secu_ret = security_server_check_privilege_by_sockfd(ifd, "pulseaudio::record", "r");
+        pa_log_warn("ifd(%d), security check ret(%d)", ifd, secu_ret);
+        CHECK_VALIDITY(c->pstream, (secu_ret == SECURITY_SERVER_API_SUCCESS), tag, PA_ERR_ACCESS_BY_SECURITY);
+    }
+
 #endif /* USE_SECURITY */
     p = pa_proplist_new();
 
@@ -4484,44 +4498,42 @@ static void command_set_default_sink_or_source(pa_pdispatch *pd, uint32_t comman
 
 #ifdef __TIZEN__
 static void command_set_default_sink_by_api_bus(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_tagstruct *t, void *userdata) {
-	pa_native_connection *c = PA_NATIVE_CONNECTION(userdata);
-	pa_sink *sink;
-	pa_bool_t found = FALSE;
-	const char *api, *bus;
-	const char *api_string, *bus_string, *form_factor;
-	uint32_t idx;
+    pa_native_connection *c = PA_NATIVE_CONNECTION(userdata);
+    pa_sink *sink, *cur_sink;
+    pa_bool_t found = FALSE;
+    const char *api, *bus;
+    const char *api_string, *bus_string, *form_factor;
+    uint32_t idx;
 
-	pa_native_connection_assert_ref(c);
-	pa_assert(t);
+    pa_native_connection_assert_ref(c);
+    pa_assert(t);
 
-	if (pa_tagstruct_gets(t, &api) < 0 ||
-			pa_tagstruct_gets(t, &bus) < 0 ||
-			!pa_tagstruct_eof(t)) {
-		protocol_error(c);
-		return;
-	}
+    if (pa_tagstruct_gets(t, &api) < 0 || pa_tagstruct_gets(t, &bus) < 0 || !pa_tagstruct_eof(t)) {
+        protocol_error(c);
+        return;
+    }
 
-	CHECK_VALIDITY(c->pstream, c->authorized, tag, PA_ERR_ACCESS);
-	CHECK_VALIDITY(c->pstream, !api || pa_utf8_valid(api), tag, PA_ERR_INVALID);
-	CHECK_VALIDITY(c->pstream, !bus || pa_utf8_valid(bus), tag, PA_ERR_INVALID);
+    CHECK_VALIDITY(c->pstream, c->authorized, tag, PA_ERR_ACCESS);
+    CHECK_VALIDITY(c->pstream, !api || pa_utf8_valid(api), tag, PA_ERR_INVALID);
+    CHECK_VALIDITY(c->pstream, !bus || pa_utf8_valid(bus), tag, PA_ERR_INVALID);
 
-	pa_assert(command == PA_COMMAND_SET_DEFAULT_SINK_BY_API_BUS);
+    pa_assert(command == PA_COMMAND_SET_DEFAULT_SINK_BY_API_BUS);
 
-	PA_IDXSET_FOREACH(sink, c->protocol->core->sinks, idx) {
-		if (sink && sink->proplist) {
-			api_string = pa_proplist_gets(sink->proplist, "device.api");
-			if (api_string) {
-				pa_log_debug("Found api = [%s]\n", api_string);
-				if (!strcmp(api, api_string)) {
-					bus_string = pa_proplist_gets(sink->proplist, "device.bus");
-					if (bus_string) {
-						pa_log_debug("Found bus = [%s]\n", bus_string);
-						if(!strcmp(bus, bus_string)) {
-							pa_log_debug("  ** FOUND!!! set default sink to [%s]\n", sink->name);
-							found = TRUE;
-							break;
-						} else {
-							pa_log_debug("No string [%s] match, match with form_factor = internal\n", bus);
+    PA_IDXSET_FOREACH(sink, c->protocol->core->sinks, idx) {
+        if (sink && sink->proplist) {
+            api_string = pa_proplist_gets(sink->proplist, "device.api");
+            if (api_string) {
+                pa_log_debug("Found api = [%s]\n", api_string);
+                if (!strcmp(api, api_string)) {
+                    bus_string = pa_proplist_gets(sink->proplist, "device.bus");
+                    if (bus_string) {
+                        pa_log_debug("Found bus = [%s]\n", bus_string);
+                        if(!strcmp(bus, bus_string)) {
+                            pa_log_debug("  ** FOUND!!! set default sink to [%s]\n", sink->name);
+                            found = TRUE;
+                            break;
+                        } else {
+                            pa_log_debug("No string [%s] match, match with form_factor = internal\n", bus);
                             form_factor = pa_proplist_gets(sink->proplist, PA_PROP_DEVICE_FORM_FACTOR );
                             if (form_factor) {
                                 if(!strcmp(form_factor, "internal")) {
@@ -4529,35 +4541,39 @@ static void command_set_default_sink_by_api_bus(pa_pdispatch *pd, uint32_t comma
                                     found = TRUE;
                                     break;
                                 }
-                            }
-                            else {
+                            } else {
                                 pa_log_debug("This device doesn't have form factor property");
                             }
                         }
-					} else {
-						pa_log_debug(" Found no bus ");
-						if (!strcmp(DEVICE_BUS_BUILTIN, bus)) {
-							pa_log_debug(" searching bus was builtin, then select this");
-							found = TRUE;
-							break;
-						}
-					}
-				} else {
-					pa_log_debug("No string [%s] match!!!!\n", api);
-				}
-			}
+                    } else {
+                        pa_log_debug(" Found no bus ");
+                        if (!strcmp(DEVICE_BUS_BUILTIN, bus)) {
+                            cur_sink = pa_namereg_get_default_sink(c->protocol->core);
 
-		}
-	}
+                            /* we do not preload modules, so it means there is no builtin device */
+                            if(strstr(cur_sink->name, "virtual")) {
+                                goto exit;
+                            } else {
+                                pa_log_debug(" searching bus was builtin, then select this");
+                                found = TRUE;
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    pa_log_debug("No string [%s] match!!!!\n", api);
+                }
+            }
+        }
+    }
+    if (!found)
+        sink = NULL;
 
-	if (!found)
-		sink = NULL;
+    CHECK_VALIDITY(c->pstream, sink, tag, PA_ERR_NOENTITY);
+    pa_namereg_set_default_sink(c->protocol->core, sink);
 
-	CHECK_VALIDITY(c->pstream, sink, tag, PA_ERR_NOENTITY);
-
-	pa_namereg_set_default_sink(c->protocol->core, sink);
-
-	pa_pstream_send_simple_ack(c->pstream, tag);
+exit:
+    pa_pstream_send_simple_ack(c->pstream, tag);
 }
 
 static void command_set_default_sink_for_usb(pa_pdispatch *pd, uint32_t command, uint32_t tag, pa_tagstruct *t, void *userdata) {

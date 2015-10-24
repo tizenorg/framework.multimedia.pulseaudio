@@ -62,9 +62,6 @@
 #include "tizen-audio.h"
 
 #define VCONFKEY_SOUND_HDMI_SUPPORT "memory/private/sound/hdmisupport"
-#ifdef PRIMARY_VOLUME
-#define VCONFKEY_SOUND_PRIMARY_VOLUME_TYPE "memory/private/sound/PrimaryVolumetype"
-#endif
 
 PA_MODULE_AUTHOR("Seungbae Shin");
 PA_MODULE_DESCRIPTION("Media Policy module");
@@ -167,11 +164,7 @@ static const char* const valid_modargs[] = {
 /* check if this sink is bluez */
 
 /* Vconf Keys */
-#define DEFAULT_BOOTING_SOUND_PATH "/usr/share/keysound/poweron.wav"
-#define VCONF_BOOTING "memory/private/sound/booting"
-#ifdef BURST_SHOT
-#define VCONF_SOUND_BURSTSHOT "memory/private/sound/burstshot"
-#endif
+#define DEFAULT_BOOTING_SOUND_PATH "/usr/share/keysound/poweron.ogg"
 
 /* boot sound */
 #define BOOTING_SOUND_SAMPLE "booting"
@@ -210,6 +203,8 @@ struct pa_primary_volume_type_info {
     PA_LLIST_FIELDS(struct pa_primary_volume_type_info);
 };
 #endif
+
+pa_bool_t g_is_recording = FALSE; /* temporal global variables */
 
 struct userdata {
     pa_core *core;
@@ -291,7 +286,6 @@ enum {
 enum {
     SUBCOMMAND_TEST,
     SUBCOMMAND_PLAY_SAMPLE,
-    SUBCOMMAND_PLAY_SAMPLE_CONTINUOUSLY,
     SUBCOMMAND_MONO,
     SUBCOMMAND_BALANCE,
     SUBCOMMAND_MUTEALL,
@@ -308,7 +302,12 @@ enum {
     SUBCOMMAND_SET_MUTE,
     SUBCOMMAND_IS_AVAILABLE_HIGH_LATENCY,
     SUBCOMMAND_UNLOAD_HDMI,
-
+    SUBCOMMAND_SET_ROUTE_INFO,
+#ifdef TIZEN_TV
+    SUBCOMMAND_SET_MASTER_VOLUME,
+    SUBCOMMAND_SET_MASTER_MUTE,
+    SUBCOMMAND_SET_OUTPUT_DEVICE,
+#endif /* end of TIZEN_TV */
 };
 
 
@@ -450,45 +449,26 @@ static inline pa_bool_t __is_mute_policy(void)
 
 static inline pa_bool_t __is_recording(void)
 {
-    int capture_status = 0;
-
-    /* Check whether audio is recording */
-    if (vconf_get_int(VCONFKEY_SOUND_CAPTURE_STATUS, &capture_status)) {
-        pa_log_warn("vconf_get_bool for %s failed", VCONFKEY_SOUND_CAPTURE_STATUS);
-    }
-
-    return (capture_status) ? TRUE : FALSE;
+    return g_is_recording;
 }
 
 static inline pa_bool_t __is_noise_reduction_on(void)
 {
-    int noise_reduction_on = 1;
-
-    if (vconf_get_bool(VCONFKEY_CALL_NOISE_REDUCTION_STATE_BOOL, &noise_reduction_on)) {
-        pa_log_warn("vconf_get_bool for %s failed", VCONFKEY_CALL_NOISE_REDUCTION_STATE_BOOL);
-    }
+    int noise_reduction_on = 0;
 
     return (noise_reduction_on == 1) ? TRUE : FALSE;
 }
 
 static bool __is_extra_volume_on(void)
 {
-    int extra_volume_on = 1;
-
-    if (vconf_get_bool(VCONFKEY_CALL_EXTRA_VOLUME_STATE_BOOL, &extra_volume_on)) {
-        pa_log_warn("vconf_get_bool for %s failed", VCONFKEY_CALL_EXTRA_VOLUME_STATE_BOOL);
-    }
+    int extra_volume_on = 0;
 
     return (extra_volume_on == 1) ? TRUE : FALSE;
 }
 
 static bool __is_wideband(void)
 {
-    int wbamr = 1;
-
-    if (vconf_get_bool(VCONFKEY_CALL_WBAMR_STATE_BOOL, &wbamr)) {
-        pa_log_warn("vconf_get_bool for %s failed", VCONFKEY_CALL_WBAMR_STATE_BOOL);
-    }
+    int wbamr = 0;
 
     return (wbamr == 1) ? TRUE : FALSE;
 }
@@ -714,6 +694,10 @@ static pa_sink* policy_select_proper_sink (struct userdata *u, const char* polic
     sink_null = (pa_sink *)pa_namereg_get(u->core, "null", PA_NAMEREG_SINK);
     /* if default sink is set as null sink, we will use null sink */
     if (def == sink_null)
+        return def;
+
+    /* Skip select sink during call and voip mode*/
+    if ((def == pa_namereg_get(c, SINK_VIRTUAL, PA_NAMEREG_SINK)) || (def == pa_namereg_get(c, SINK_VOIP, PA_NAMEREG_SINK)))
         return def;
 
     /* Select sink to */
@@ -1664,251 +1648,7 @@ static uint32_t __get_route_flag(struct userdata *u) {
 
     return route_flag;
 }
-#ifdef BURST_SHOT
 
-#define BURST_SOUND_DEFAULT_TIME_INTERVAL (0.09 * PA_USEC_PER_SEC)
-static void __play_audio_sample_timeout_cb(pa_mainloop_api *m, pa_time_event *e, const struct timeval *t, void *userdata)
-{
-    struct userdata* u = (struct userdata*)userdata;
-    pa_usec_t interval = u->audio_sample_userdata.time_interval;
-    pa_usec_t now = 0ULL;
-
-    pa_assert(m);
-    pa_assert(e);
-    pa_assert(u);
-
-    pa_mutex_lock(u->audio_sample_userdata.mutex);
-
-    /* These checks are added to avoid server crashed on unpredictable situation*/
-    if ((u->audio_sample_userdata.time_event == NULL) ||
-       (u->audio_sample_userdata.i == NULL) ||
-       (u->audio_sample_userdata.q == NULL)) {
-        pa_log_error("Timer should not have fired with this condition time_event=%p i=%p q=%p",
-            u->audio_sample_userdata.time_event, u->audio_sample_userdata.i, u->audio_sample_userdata.q);
-
-        if (u->audio_sample_userdata.time_event != NULL) {
-            pa_core_rttime_restart(u->core, e, PA_USEC_INVALID);
-            u->core->mainloop->time_free(u->audio_sample_userdata.time_event);
-            u->audio_sample_userdata.time_event = NULL;
-        }
-        if (u->audio_sample_userdata.count > 1) {
-            if (u->audio_sample_userdata.i != NULL) {
-                pa_sink_input_set_mute(u->audio_sample_userdata.i, TRUE, TRUE);
-                pa_sink_input_unlink(u->audio_sample_userdata.i);
-            }
-            if (u->audio_sample_userdata.q != NULL) {
-                pa_memblockq_free(u->audio_sample_userdata.q);
-                u->audio_sample_userdata.q = NULL;
-            }
-        }
-        if (u->audio_sample_userdata.i != NULL) {
-            pa_sink_input_unref(u->audio_sample_userdata.i);
-            u->audio_sample_userdata.i = NULL;
-        }
-        u->audio_sample_userdata.is_running = FALSE;
-    } else if (u->audio_sample_userdata.is_running) {
-        // calculate timer boosting
-        pa_log_info("- shot count = %d, memq len = %d ", u->audio_sample_userdata.count,
-                    pa_memblockq_get_length(u->audio_sample_userdata.q));
-        if (u->audio_sample_userdata.factor > 1ULL)
-            interval = u->audio_sample_userdata.time_interval / u->audio_sample_userdata.factor;
-
-        if (u->audio_sample_userdata.count == 0) {
-            // 5. first post data
-            pa_sink_input_put(u->audio_sample_userdata.i);
-        } else {
-            // 5. post data
-            if (pa_memblockq_push(u->audio_sample_userdata.q, &u->audio_sample_userdata.e->memchunk) < 0) {
-                pa_log_error("memory push fail cnt(%d), factor(%llu), interval(%llu)",
-                    u->audio_sample_userdata.count, u->audio_sample_userdata.factor, u->audio_sample_userdata.time_interval);
-                pa_assert(0);
-            }
-        }
-        u->audio_sample_userdata.count++;
-
-        pa_rtclock_now_args(&now);
-        pa_core_rttime_restart(u->core, e, now + interval);
-        if (u->audio_sample_userdata.factor > 1ULL)
-            u->audio_sample_userdata.factor -= 1ULL;
-    } else {
-        pa_core_rttime_restart(u->core, e, PA_USEC_INVALID);
-        u->core->mainloop->time_free(u->audio_sample_userdata.time_event);
-        u->audio_sample_userdata.time_event = NULL;
-
-        /* FIXME: How memblockq is freed when count is 1? */
-        // fading. but should be emitted first shutter sound totally.
-        if (u->audio_sample_userdata.count > 1) {
-            pa_sink_input_set_mute(u->audio_sample_userdata.i, TRUE, TRUE);
-            pa_sink_input_unlink(u->audio_sample_userdata.i);
-
-            pa_memblockq_free(u->audio_sample_userdata.q);
-            u->audio_sample_userdata.q = NULL;
-        }
-        pa_sink_input_unref(u->audio_sample_userdata.i);
-        u->audio_sample_userdata.i = NULL;
-        pa_log_info("sample shot clear!!");
-
-        /* Clear Burst vconf */
-        vconf_set_int (VCONF_SOUND_BURSTSHOT, 0);
-    }
-    pa_mutex_unlock(u->audio_sample_userdata.mutex);
-}
-
-static audio_return_t policy_play_sample_continuously(struct userdata *u, pa_native_connection *c, const char *name, pa_usec_t interval,
-    uint32_t volume_type, uint32_t gain_type, uint32_t volume_level, uint32_t *stream_idx)
-{
-    audio_return_t audio_ret = AUDIO_RET_OK;
-    pa_proplist *p = 0;
-    pa_sink *sink = NULL;
-    audio_info_t audio_info;
-    double volume_linear = 1.0f;
-    pa_client *client = pa_native_connection_get_client(c);
-
-    pa_scache_entry *e;
-    pa_bool_t pass_volume = TRUE;
-    pa_proplist *merged =0;
-    pa_sink_input *i = NULL;
-    pa_memblockq *q = NULL;
-    pa_memchunk silence;
-    pa_cvolume r;
-    pa_usec_t now = 0ULL;
-
-    if (!u->audio_sample_userdata.mutex)
-        u->audio_sample_userdata.mutex = pa_mutex_new(FALSE, FALSE);
-
-    pa_mutex_lock(u->audio_sample_userdata.mutex);
-
-    pa_assert(u->audio_sample_userdata.is_running == FALSE); // allow one instace.
-
-    memset(&audio_info, 0x00, sizeof(audio_info_t));
-
-    p = pa_proplist_new();
-
-    /* Set volume type of stream */
-    pa_proplist_setf(p, PA_PROP_MEDIA_TIZEN_VOLUME_TYPE, "%d", volume_type);
-    /* Set gain type of stream */
-    pa_proplist_setf(p, PA_PROP_MEDIA_TIZEN_GAIN_TYPE, "%d", gain_type);
-    /* Set policy */
-    pa_proplist_setf(p, PA_PROP_MEDIA_POLICY, "%s", volume_type == AUDIO_VOLUME_TYPE_FIXED ? POLICY_PHONE : POLICY_AUTO);
-
-    pa_proplist_update(p, PA_UPDATE_MERGE, client->proplist);
-
-    if (!(sink = pa_namereg_get_default_sink(u->core)))
-        goto exit;
-
-    /* FIXME : Add gain_type parameter to API like volume_type */
-    audio_info.stream.gain_type = gain_type;
-
-    if (AUDIO_IS_ERROR((audio_ret = u->audio_mgr.intf.get_volume_value(u->audio_mgr.data, &audio_info, volume_type, volume_level, &volume_linear)))) {
-        pa_log_warn("get_volume_value returns error:0x%x", audio_ret);
-        goto exit;
-    }
-
-   /*
-    1. load cam-shutter sample
-    2. create memchunk using sample.
-    3. create sink_input(cork mode)
-    4. set timer
-    5. post data(sink-input put or push memblockq)
-    */
-
-    //  1. load cam-shutter sample
-    merged = pa_proplist_new();
-
-    if (!(e = pa_namereg_get(u->core, name, PA_NAMEREG_SAMPLE)))
-        goto exit;
-
-    pa_proplist_sets(merged, PA_PROP_MEDIA_NAME, name);
-    pa_proplist_sets(merged, PA_PROP_EVENT_ID, name);
-    /* Set policy for selecting sink */
-    pa_proplist_sets(merged, PA_PROP_MEDIA_POLICY_IGNORE_PRESET_SINK, "yes");
-
-    if (e->lazy && !e->memchunk.memblock) {
-        pa_channel_map old_channel_map = e->channel_map;
-
-        if (pa_sound_file_load(u->core->mempool, e->filename, &e->sample_spec, &e->channel_map, &e->memchunk, merged) < 0)
-            goto exit;
-
-        pa_subscription_post(u->core, PA_SUBSCRIPTION_EVENT_SAMPLE_CACHE|PA_SUBSCRIPTION_EVENT_CHANGE, e->index);
-
-        if (e->volume_is_set) {
-            if (pa_cvolume_valid(&e->volume))
-                pa_cvolume_remap(&e->volume, &old_channel_map, &e->channel_map);
-            else
-                pa_cvolume_reset(&e->volume, e->sample_spec.channels);
-        }
-    }
-
-    if (!e->memchunk.memblock)
-        goto exit;
-
-    if (e->volume_is_set && PA_VOLUME_IS_VALID(pa_sw_volume_from_linear(volume_linear))) {
-        pa_cvolume_set(&r, e->sample_spec.channels, pa_sw_volume_from_linear(volume_linear));
-        pa_sw_cvolume_multiply(&r, &r, &e->volume);
-    } else if (e->volume_is_set)
-        r = e->volume;
-    else if (PA_VOLUME_IS_VALID(pa_sw_volume_from_linear(volume_linear)))
-        pa_cvolume_set(&r, e->sample_spec.channels, pa_sw_volume_from_linear(volume_linear));
-    else
-        pass_volume = FALSE;
-
-    pa_proplist_update(merged, PA_UPDATE_MERGE, e->proplist);
-    pa_proplist_update(p, PA_UPDATE_MERGE, merged);
-
-    if (e->lazy)
-        time(&e->last_used_time);
-
-    // 2. create memchunk using sample.
-    pa_silence_memchunk_get(&sink->core->silence_cache, sink->core->mempool, &silence, &e->sample_spec, 0);
-    q = pa_memblockq_new("pa_play_memchunk() q", 0, e->memchunk.length * 35, 0, &e->sample_spec, 1, 1, 0, &silence);
-    pa_memblock_unref(silence.memblock);
-
-    pa_assert_se(pa_memblockq_push(q, &e->memchunk) >= 0);
-
-    // 3. create sink_input(cork mode)
-    if (!(i = pa_memblockq_sink_input_new(sink, &e->sample_spec, &e->channel_map, q, pass_volume ? &r : NULL,
-        p, PA_SINK_INPUT_NO_CREATE_ON_SUSPEND|PA_SINK_INPUT_KILL_ON_SUSPEND)))
-        goto exit;
-
-    // 4. set timer
-    u->audio_sample_userdata.e = e;
-    u->audio_sample_userdata.i = i;
-    u->audio_sample_userdata.q = q;
-    u->audio_sample_userdata.time_interval = interval == (pa_usec_t)0 ? BURST_SOUND_DEFAULT_TIME_INTERVAL : interval;
-    u->audio_sample_userdata.is_running = TRUE;
-    u->audio_sample_userdata.factor = 4ULL; // for memory block boosting
-    u->audio_sample_userdata.count = 0;
-
-    pa_rtclock_now_args(&now); // doesn't use arm barrel shiter. SBF
-    pa_log_warn("now(%llu), start interval(%llu)", now, interval / u->audio_sample_userdata.factor);
-    u->audio_sample_userdata.factor -= 1ULL;
-    u->audio_sample_userdata.time_event = pa_core_rttime_new(u->core, now, __play_audio_sample_timeout_cb, u);
-
-exit:
-    if (p)
-        pa_proplist_free(p);
-    if (merged)
-        pa_proplist_free(merged);
-    if (q && (u->audio_sample_userdata.is_running == FALSE))
-        pa_memblockq_free(q);
-
-    pa_mutex_unlock(u->audio_sample_userdata.mutex);
-
-    return audio_ret;
-}
-
-static void  policy_stop_sample_continuously(struct userdata *u)
-{
-    if (u->audio_sample_userdata.time_event) {
-        pa_mutex_lock(u->audio_sample_userdata.mutex);
-        pa_assert(u->audio_sample_userdata.is_running);
-        u->audio_sample_userdata.is_running = FALSE;
-        pa_mutex_unlock(u->audio_sample_userdata.mutex);
-        pa_log_info("timeout_cb called (%d) times", u->audio_sample_userdata.count);
-    }
-}
-
-#endif
 static audio_return_t policy_play_sample(struct userdata *u, pa_native_connection *c, const char *name, uint32_t volume_type, uint32_t gain_type, uint32_t volume_level, uint32_t *stream_idx)
 {
     audio_return_t audio_ret = AUDIO_RET_OK;
@@ -1952,7 +1692,7 @@ static audio_return_t policy_play_sample(struct userdata *u, pa_native_connectio
 
     is_boot_sound = pa_streq(name, BOOTING_SOUND_SAMPLE);
     if (is_boot_sound && pa_namereg_get(u->core, name, PA_NAMEREG_SAMPLE) == NULL) {
-        booting = vconf_get_str(VCONF_BOOTING);
+        booting = vconf_get_str(VCONFKEY_SOUND_BOOT_SOUND);
         file_to_add = (booting)? booting : (char *)DEFAULT_BOOTING_SOUND_PATH;
         if ((sample_ret = pa_scache_add_file(u->core, name, file_to_add, &sample_idx)) != 0) {
             pa_log_error("failed to add sample [%s][%s]", name, file_to_add);
@@ -2306,6 +2046,7 @@ static audio_return_t __update_volume(struct userdata *u, uint32_t stream_idx, u
                     return audio_ret;
                 }
             }
+            pa_cvolume_init(&cv);
             pa_cvolume_set(&cv, si->sample_spec.channels, pa_sw_volume_from_linear(volume_linear));
 
             pa_sink_input_set_volume(si, &cv, TRUE, TRUE);
@@ -2720,7 +2461,46 @@ static pa_bool_t policy_is_available_high_latency(struct userdata *u)
 
     return TRUE;
 }
+#ifdef TIZEN_TV
+static audio_return_t policy_set_master_volume(struct userdata *u, uint32_t volume_level) {
+    audio_return_t audio_ret = AUDIO_RET_OK;
 
+    pa_log_info("set_global_volume level:%d", volume_level);
+
+    /* Set global volume level */
+    if (u->audio_mgr.intf.set_speaker_gain) {
+        audio_ret = u->audio_mgr.intf.set_speaker_gain(u->audio_mgr.data, volume_level);
+    }
+
+    return audio_ret;
+}
+
+static audio_return_t policy_set_master_mute(struct userdata *u, uint32_t mute) {
+    audio_return_t audio_ret = AUDIO_RET_OK;
+
+    pa_log_info("set_global_mute mute:%d", mute);
+
+    /* Set global mute */
+    if (u->audio_mgr.intf.set_amp_mute) {
+        audio_ret = u->audio_mgr.intf.set_amp_mute(u->audio_mgr.data, mute);
+    }
+
+    return audio_ret;
+}
+
+static audio_return_t policy_set_output_device(struct userdata *u, uint32_t device) {
+    audio_return_t audio_ret = AUDIO_RET_OK;
+
+    pa_log_info("set_output_device[%d]", device);
+
+    /* Set output device */
+    if (u->audio_mgr.intf.set_output_device) {
+        audio_ret = u->audio_mgr.intf.set_output_device(u->audio_mgr.data, device);
+    }
+
+    return audio_ret;
+}
+#endif /* end of TIZEN_TV */
 #define EXT_VERSION 1
 
 static int extension_cb(pa_native_protocol *p, pa_module *m, pa_native_connection *c, uint32_t tag, pa_tagstruct *t) {
@@ -2776,56 +2556,7 @@ static int extension_cb(pa_native_protocol *p, pa_module *m, pa_native_connectio
             pa_tagstruct_putu32(reply, stream_idx);
             break;
         }
-#ifdef BURST_SHOT
 
-        case SUBCOMMAND_PLAY_SAMPLE_CONTINUOUSLY: {
-            const char *name;
-            pa_bool_t start;
-            uint32_t volume_type = 0;
-            uint32_t gain_type = 0;
-            uint32_t volume_level = 0;
-            uint32_t stream_idx = PA_INVALID_INDEX;
-            pa_usec_t interval;
-
-            if (pa_tagstruct_gets(t, &name) < 0 ||
-                pa_tagstruct_get_boolean(t, &start) < 0 ||
-                pa_tagstruct_getu32(t, &volume_type) < 0 ||
-                pa_tagstruct_getu32(t, &gain_type) < 0 ||
-                pa_tagstruct_getu32(t, &volume_level) < 0 ||
-                pa_tagstruct_get_usec(t, &interval) < 0 ||
-                !pa_tagstruct_eof(t)) {
-                pa_log_error("protocol error");
-                goto fail;
-            }
-            /*When play sample continuous is in running state another instance is not allowed*/
-            if (start == TRUE) {
-                if (u->audio_sample_userdata.is_running == FALSE) {
-                    /* Now it is time to prepare burstshot...set burstshot vconf */
-                    vconf_set_int (VCONF_SOUND_BURSTSHOT, 1);
-
-                    pa_log_warn("play_sample_continuously start. name(%s), vol_type(%d), gain_type(%d), vol_level(%d), interval(%lu ms)",
-                        name, volume_type, gain_type, volume_level, (unsigned long) (interval / PA_USEC_PER_MSEC));
-                    policy_play_sample_continuously(u, c, name, interval, volume_type, gain_type, volume_level, &stream_idx);
-
-                    /* Running false after start means, start failed....unset burstshot vconf */
-                    if (u->audio_sample_userdata.is_running == FALSE) {
-                        vconf_set_int (VCONF_SOUND_BURSTSHOT, 0);
-                    }
-                } else {
-                    pa_log_warn("play_sample_continuously is in running state - do nothing");
-                }
-            } else if ((start == FALSE) && (u->audio_sample_userdata.is_running == TRUE)) {
-                pa_log_warn("play_sample_continuously end.");
-                policy_stop_sample_continuously(u);
-            } else {
-                pa_log_error("play sample continuously unknown command. name(%s), start(%d)", name, start);
-            }
-
-            pa_tagstruct_putu32(reply, stream_idx);
-            break;
-        }
-
-#endif
         case SUBCOMMAND_MONO: {
 
             pa_bool_t enable;
@@ -2834,13 +2565,11 @@ static int extension_cb(pa_native_protocol *p, pa_module *m, pa_native_connectio
                 goto fail;
 
             pa_log_debug ("new mono value = %d\n", enable);
-            if (enable == u->is_mono) {
-                pa_log_debug ("No changes in mono value = %d", u->is_mono);
+            if (enable == u->core->is_mono) {
+                pa_log_debug ("No changes in mono value = %d", u->core->is_mono);
                 break;
             }
-
-            u->is_mono = enable;
-            /* To DO */
+            u->core->is_mono = enable;
             break;
         }
 
@@ -3078,7 +2807,51 @@ static int extension_cb(pa_native_protocol *p, pa_module *m, pa_native_connectio
         case SUBCOMMAND_UNLOAD_HDMI: {
             break;
         }
+        case SUBCOMMAND_SET_ROUTE_INFO: {
+            const char *key = NULL;
+            const char *value = NULL;
 
+            if (pa_tagstruct_gets(t, &key) < 0 ||
+                pa_tagstruct_gets(t, &value) < 0 ||
+                !pa_tagstruct_eof(t)) {
+                pa_log_error("protocol error");
+                goto fail;
+            }
+
+            if (u->audio_mgr.intf.set_route_info) {
+                pa_log_info_verbose("set_route_info. key(%s), value(%s)", key, value);
+                u->audio_mgr.intf.set_route_info(u->audio_mgr.data, key, value);
+            }
+            break;
+        }
+#ifdef TIZEN_TV
+        case SUBCOMMAND_SET_MASTER_VOLUME: {
+            uint32_t volume_level = 0;
+
+            pa_tagstruct_getu32(t, &volume_level);
+
+            policy_set_master_volume(u, volume_level);
+            break;
+        }
+
+        case SUBCOMMAND_SET_MASTER_MUTE: {
+            uint32_t mute = 0;
+
+            pa_tagstruct_getu32(t, &mute);
+
+            policy_set_master_mute(u, mute);
+            break;
+        }
+
+        case SUBCOMMAND_SET_OUTPUT_DEVICE: {
+            uint32_t device = 0;
+
+            pa_tagstruct_getu32(t, &device);
+
+            policy_set_output_device(u, device);
+            break;
+        }
+#endif /* end of TIZEN_TV */
         default:
             goto fail;
     }
@@ -3131,6 +2904,7 @@ static pa_hook_result_t sink_input_new_hook_callback(pa_core *c, pa_sink_input_n
     pa_strbuf *s = NULL;
     const char *rate_str = NULL;
     const char *ch_str = NULL;
+    const char *format_str = NULL;
     char *s_info = NULL;
 
     pa_assert(c);
@@ -3155,7 +2929,10 @@ static pa_hook_result_t sink_input_new_hook_callback(pa_core *c, pa_sink_input_n
         if (req_format && req_format->plist) {
             rate_str = pa_proplist_gets(req_format->plist, PA_PROP_FORMAT_RATE);
             ch_str = pa_proplist_gets(req_format->plist, PA_PROP_FORMAT_CHANNELS);
-            pa_log_info("req rate = %s, req ch = %s", rate_str, ch_str);
+            if (pa_format_info_get_prop_string(req_format, PA_PROP_FORMAT_SAMPLE_FORMAT, &format_str)==0)
+                new_data->sample_spec.format = pa_parse_sample_format(format_str);
+
+            pa_log_info("req rate = %s, req ch = %s, req format = %s", rate_str, ch_str, format_str);
 
             if (ch_str)
                 new_data->sample_spec.channels = atoi (ch_str);
@@ -3604,11 +3381,9 @@ static void subscribe_cb(pa_core *c, pa_subscription_event_type_t t, uint32_t id
                 source_state = pa_source_get_state(source_cur);
                 pa_log_debug_verbose("source[%s] changed to state[%d]", source_cur->name, source_state);
                 if (source_state == PA_SOURCE_RUNNING) {
-                    vconf_set_int (VCONFKEY_SOUND_CAPTURE_STATUS, 1);
+                    g_is_recording = TRUE;
                 } else {
-                    vconf_get_int (VCONFKEY_SOUND_CAPTURE_STATUS, &vconf_source_status);
-                    if (vconf_source_status)
-                        vconf_set_int (VCONFKEY_SOUND_CAPTURE_STATUS, 0);
+                    g_is_recording = FALSE;
                 }
             }
         }
@@ -4070,6 +3845,12 @@ int pa__init(pa_module *m)
         u->audio_mgr.intf.set_session = dlsym(u->audio_mgr.dl_handle, "audio_set_session");
         u->audio_mgr.intf.set_route = dlsym(u->audio_mgr.dl_handle, "audio_set_route");
         u->audio_mgr.intf.set_mixer_value_string = dlsym(u->audio_mgr.dl_handle, "audio_set_mixer_value_string");
+        u->audio_mgr.intf.set_route_info = dlsym(u->audio_mgr.dl_handle, "audio_set_route_info");
+#ifdef TIZEN_TV
+        u->audio_mgr.intf.set_speaker_gain= dlsym(u->audio_mgr.dl_handle, "audio_set_speaker_gain");
+        u->audio_mgr.intf.set_amp_mute = dlsym(u->audio_mgr.dl_handle, "audio_set_amp_mute");
+        u->audio_mgr.intf.set_output_device = dlsym(u->audio_mgr.dl_handle, "audio_set_output_device");
+#endif /* end of TIZEN_TV */
 
         if (u->audio_mgr.intf.init) {
             if (u->audio_mgr.intf.init(&u->audio_mgr.data, (void *)u) != AUDIO_RET_OK) {

@@ -192,6 +192,7 @@ pa_ext_policy_set_volume_level;
 pa_ext_policy_update_volume;
 pa_ext_policy_get_mute
 pa_ext_policy_set_mute;
+pa_ext_policy_set_route_info;
 pa_ext_suspend_on_idle_set_info;
 pa_ext_suspend_on_idle_update_scn;
 pa_format_info_copy;
