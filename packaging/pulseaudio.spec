@@ -2,7 +2,7 @@
 %define pulseversion  4.0
 Name:       pulseaudio
 Summary:    Improved Linux sound server
-Version:    4.0.154
+Version:    4.0.155
 Release:    0
 Group:      Multimedia/PulseAudio
 License:    LGPL-2.1
@@ -121,7 +121,7 @@ export CFLAGS+=" -mfloat-abi=softfp -mfpu=neon"
 export CFLAGS+=" -DPA_EXT_USE_VOLUME_FADING -D__TIZEN__ -D__TIZEN_BT__ -D__TIZEN_LOG__ -DBLUETOOTH_APTX_SUPPORT"
 export LDFLAGS+="-Wl,--no-as-needed"
 %ifarch %{ix86}
-%reconfigure %{conf_option}
+%reconfigure %{conf_option} --enable-security
 %else
 %reconfigure %{conf_option} --enable-security
 %endif
